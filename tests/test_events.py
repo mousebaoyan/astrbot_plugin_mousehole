@@ -87,7 +87,7 @@ async def test_events_are_caught_up_then_streamed_and_the_cursor_kept(tmp_path, 
     sync = type("Sync", (), {"groups": [GROUP]})()
     forum = Forum("http://forum.test", "t", httpx.MockTransport(handle))
     with pytest.raises(Stop):
-        await Events(forum, qq, sync, state, [], None).run()
+        await Events(forum, qq, sync, state, lottery=[], bio=True, index=None).run()
     # The stale draw isn't announced; the fresh and the streamed ones are.
     assert qq.sent == [GROUP, GROUP]
     assert bios == [{"bio": "123 的签名"}]
@@ -109,5 +109,5 @@ async def test_an_expired_cursor_goes_on_from_the_latest_event(tmp_path, monkeyp
     state.write_text(json.dumps({"cursor": 5}))
     forum = Forum("http://forum.test", "t", httpx.MockTransport(handle))
     with pytest.raises(Stop):
-        await Events(forum, FakeQQ(), None, state, [], None).run()
+        await Events(forum, FakeQQ(), None, state, lottery=[], bio=True, index=None).run()
     assert json.loads(state.read_text()) == {"cursor": 77}

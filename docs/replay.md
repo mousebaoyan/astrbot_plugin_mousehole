@@ -82,8 +82,8 @@
 | 时间 | 消息的时间：一轮"等 10 分钟"按消息时间算，不真等 |
 | 论坛 | 内存里的假论坛（`tools/fake_forum.py`，单元测试也用它）：记下发帖、回复和更新，答 `GET /bot/messages`；`GET /search/similar` 按标题和正文的字的二元组重合度找最像的 5 个；版块和标签从 `--boards` 读；图片不真的下载 |
 | OneJev | 真的，`--onejev` 指定地址，默认 `http://127.0.0.1:8000` |
-| 大模型 | 插件里调 AstrBot 的 provider，回放时调 OpenAI 兼容的 `/chat/completions`，地址、密钥和模型从环境变量 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL` 读。用和线上 `llm_provider` 同一个模型 |
-| 嵌入模型 | 回放时调 OpenAI 兼容的 `/embeddings`，环境变量 `EMB_BASE_URL`、`EMB_API_KEY`（Ollama 不用填）、`EMB_MODEL`；用和线上 `embedding_provider` 同一个模型，比如 Ollama 的 `http://127.0.0.1:11434/v1` 和 `bge-m3`。向量索引只放在内存里 |
+| 大模型 | 插件里调 AstrBot 的 provider，回放时调 OpenAI 兼容的 `/chat/completions`，地址、密钥和模型从环境变量 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL` 读。用和线上 `archive.llm_provider` 同一个模型 |
+| 嵌入模型 | 回放时调 OpenAI 兼容的 `/embeddings`，环境变量 `EMB_BASE_URL`、`EMB_API_KEY`（Ollama 不用填）、`EMB_MODEL`；用和线上 `archive.embedding_provider` 同一个模型，比如 Ollama 的 `http://127.0.0.1:11434/v1` 和 `bge-m3`。向量索引只放在内存里 |
 
 收录代码只依赖三样东西：论坛的 httpx 客户端（回放时传接到假论坛的 `MockTransport`），一个"给系统提示词和提示词、返回文字和 token 用量"的函数，一个"给一批文字、返回向量"的函数。
 

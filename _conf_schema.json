@@ -18,29 +18,76 @@
     "default": "",
     "hint": "接了多个 aiocqhttp 时填它的 ID，只有一个时留空。"
   },
-  "lottery_groups": {
-    "description": "开奖结果发到哪些群",
-    "type": "list",
-    "default": [],
-    "hint": "填群号；空的发到主群。"
+  "sync_members": {
+    "description": "同步群成员",
+    "type": "bool",
+    "default": true,
+    "hint": "每小时把 NapCat 缓存里的成员名单推给论坛，进群、退群、改名片等随时推。关掉后论坛的成员名单不再更新，新群友登录不了。"
   },
-  "onejev_url": {
-    "description": "OneJev 服务的地址",
-    "type": "string",
-    "default": "http://127.0.0.1:8000",
-    "hint": "自动收录用它初筛；空的不做自动收录。"
+  "login": {
+    "description": "私聊登录",
+    "type": "bool",
+    "default": true,
+    "hint": "群友私聊 bot 发“登录”或网页上的 6 位口令登录论坛。关掉后 bot 不理这些私聊。"
   },
-  "llm_provider": {
-    "description": "自动收录用的大模型",
-    "type": "string",
-    "default": "",
-    "_special": "select_provider",
-    "hint": "空的用 AstrBot 的默认模型。"
+  "push_bio": {
+    "description": "推送 QQ 个性签名",
+    "type": "bool",
+    "default": true,
+    "hint": "群友第一次登录论坛时，查他的 QQ 个性签名推给论坛。查签名要请求一次 QQ 服务器。"
   },
-  "embedding_provider": {
-    "description": "查重用的嵌入模型 ID",
-    "type": "string",
-    "default": "",
-    "hint": "AstrBot 里配好的嵌入模型（bge-m3）的 ID；空的不做自动收录。"
+  "lottery": {
+    "description": "开奖结果",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "开奖结果发到群里",
+        "type": "bool",
+        "default": true
+      },
+      "groups": {
+        "description": "发到哪些群",
+        "type": "list",
+        "default": [],
+        "hint": "填群号；空的发到主群。"
+      }
+    }
+  },
+  "archive": {
+    "description": "自动收录",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "自动收录群里的提问和回答",
+        "type": "bool",
+        "default": false,
+        "hint": "先用回放调好、在论坛上建好收录用的版块再打开（见仓库的 docs/replay.md）。"
+      },
+      "groups": {
+        "description": "收录哪些群",
+        "type": "list",
+        "default": [],
+        "hint": "填群号；空的收录论坛上关联的所有群。"
+      },
+      "onejev_url": {
+        "description": "OneJev 服务的地址",
+        "type": "string",
+        "default": "http://127.0.0.1:8000",
+        "hint": "用它初筛每一轮消息。连不上时收录暂停，不改用大模型。"
+      },
+      "llm_provider": {
+        "description": "整理用的大模型",
+        "type": "string",
+        "default": "",
+        "_special": "select_provider",
+        "hint": "空的用 AstrBot 的默认模型。"
+      },
+      "embedding_provider": {
+        "description": "查重用的嵌入模型 ID",
+        "type": "string",
+        "default": "",
+        "hint": "AstrBot 里配好的嵌入模型（bge-m3）的 ID。"
+      }
+    }
   }
 }

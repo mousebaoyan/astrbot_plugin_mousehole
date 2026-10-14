@@ -17,7 +17,6 @@ from .sync import Sync
 
 log = logging.getLogger("astrbot.mousehole")
 
-TYPES = ["member.activated", "lottery.drawn"]
 INDEX_TYPES = ["thread.created", "post.updated", "post.deleted"]
 BATCH = 500
 # Seconds before each reconnection in a row; then every minute.
@@ -55,16 +54,22 @@ class Events:
         qq: QQ,
         sync: Sync,
         state: Path,
-        lottery_groups: list[int],
+        *,
+        lottery: list[int] | None,
+        bio: bool,
         index: Index | None,
     ):
+        """`lottery`: the groups draws are announced in, empty for the primary group, None for
+        none; `bio`: whether newly activated members get their QQ signatures pushed."""
         self.forum = forum
         self.qq = qq
         self.sync = sync
         self.state = state
-        self.lottery_groups = lottery_groups
+        self.lottery = lottery
         self.index = index
-        self.types = ",".join(TYPES + (INDEX_TYPES if index else []))
+        types = ["member.activated"] if bio else []
+        types += ["lottery.drawn"] if lottery is not None else []
+        self.types = ",".join(types + (INDEX_TYPES if index else []))
 
     def load(self) -> int | None:
         return json.loads(self.state.read_text())["cursor"] if self.state.exists() else None
@@ -131,7 +136,7 @@ class Events:
                 if time.time() - at > LOTTERY_FRESH:
                     return
                 message = lottery_message(data)
-                for group in self.lottery_groups or self.sync.groups[:1]:
+                for group in self.lottery or self.sync.groups[:1]:
                     await self.qq.send_group(group, message)
             case "thread.created" if self.index:
                 await self.index.thread_created(data["thread"]["id"])

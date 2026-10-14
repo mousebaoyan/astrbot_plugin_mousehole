@@ -36,13 +36,22 @@ class Mousehole(Star):
         data = StarTools.get_data_dir(NAME)
         self.forum = Forum(c["forum_url"], c["token"])
         self.qq = QQ(self.context.platform_manager, c["platform_id"])
-        self.sync = Sync(self.forum, self.qq)
+        self.sync = Sync(self.forum, self.qq, members=c["sync_members"])
         index = None
-        embedder = self.context.get_provider_by_id(c["embedding_provider"])
-        if c["onejev_url"] and isinstance(embedder, EmbeddingProvider):
+        archive = c["archive"]
+        self.archive_groups = {int(g) for g in archive["groups"]}
+        embedder = self.context.get_provider_by_id(archive["embedding_provider"])
+        if archive["enabled"] and not (
+            archive["onejev_url"] and isinstance(embedder, EmbeddingProvider)
+        ):
+            # The rest of the plugin works on; only archiving waits for its settings.
+            logger.error(
+                "鼠洞插件：自动收录要配好 OneJev 的地址和 AstrBot 里的嵌入模型，现在不收录"
+            )
+        elif archive["enabled"]:
             model = f"{embedder.meta().id}:{embedder.meta().model}"
             index = Index(self.forum, embedder.get_embeddings, model, data / "threads.npz")
-            self.onejev = OneJev(c["onejev_url"])
+            self.onejev = OneJev(archive["onejev_url"])
             self.archive = Archive(
                 self.forum,
                 self.onejev,
@@ -50,21 +59,24 @@ class Mousehole(Star):
                 index,
                 prefixes=self.context.get_config()["wake_prefix"],
             )
-        else:
-            logger.warning("鼠洞插件：自动收录要配好 OneJev 和 AstrBot 里的嵌入模型，现在不做")
-        lottery_groups = [int(g) for g in c["lottery_groups"]]
+        lottery = c["lottery"]
         self.events = Events(
-            self.forum, self.qq, self.sync, data / "state.json", lottery_groups, index
+            self.forum,
+            self.qq,
+            self.sync,
+            data / "state.json",
+            lottery=[int(g) for g in lottery["groups"]] if lottery["enabled"] else None,
+            bio=c["push_bio"],
+            index=index,
         )
         self.tasks = [asyncio.create_task(self.start(index))]
 
     async def start(self, index: Index | None) -> None:
         # Groups are known before any event or message is acted on.
         await self.sync.refresh_groups()
-        self.tasks += [
-            asyncio.create_task(self.sync.run()),
-            asyncio.create_task(self.events.run()),
-        ]
+        self.tasks.append(asyncio.create_task(self.sync.run()))
+        if self.events.types:
+            self.tasks.append(asyncio.create_task(self.events.run()))
         if self.archive and index:
             await index.load()
             self.tasks.append(asyncio.create_task(self.archive.run()))
@@ -79,7 +91,7 @@ class Mousehole(Star):
             await self.onejev.close()
 
     async def complete(self, system: str, prompt: str) -> tuple[str, int, int]:
-        provider = self.config["llm_provider"]
+        provider = self.config["archive"]["llm_provider"]
         if not provider:
             provider = (await self.context.get_using_provider_async()).meta().id
         res = await self.context.llm_generate(
@@ -98,19 +110,19 @@ class Mousehole(Star):
             await self.on_notice(raw)
         elif raw["post_type"] == "message" and raw["message_type"] == "private":
             text = plain(raw["message"])
-            if wants_login(text):
+            if self.config["login"] and wants_login(text):
                 await event.send(event.plain_result(await login(self.forum, raw["user_id"], text)))
                 event.stop_event()
         elif raw["post_type"] == "message" and raw["group_id"] in self.sync.groups:
             group = raw["group_id"]
             self.sync.saw(group, raw["user_id"], raw["time"])
-            if self.archive:
+            if self.archives(group):
                 self.archive.add(group, Message.from_onebot(raw), raw["self_id"])
             at_bot = any(
                 s["type"] == "at" and str(s["data"]["qq"]) == str(raw["self_id"])
                 for s in raw["message"]
             )
-            if at_bot and plain(raw["message"]).strip().startswith("登录"):
+            if self.config["login"] and at_bot and plain(raw["message"]).strip().startswith("登录"):
                 await event.send(event.plain_result("登录请私聊我"))
                 event.stop_event()
 
@@ -119,6 +131,10 @@ class Mousehole(Star):
             await self.sync.notice(raw)
             return
         # Admins taking back others' messages are not followed (design §8.7).
-        own = raw["operator_id"] == raw["user_id"]
-        if self.archive and own and raw["group_id"] in self.sync.groups:
+        if self.archives(raw["group_id"]) and raw["operator_id"] == raw["user_id"]:
             self.archive.recall(raw["group_id"], raw["message_id"], raw["user_id"])
+
+    def archives(self, group: int) -> bool:
+        if self.archive is None or group not in self.sync.groups:
+            return False
+        return not self.archive_groups or group in self.archive_groups

@@ -37,9 +37,11 @@ def delta(notice: dict[str, Any]) -> dict[str, Any] | None:
 
 
 class Sync:
-    def __init__(self, forum: Forum, qq: QQ):
+    def __init__(self, forum: Forum, qq: QQ, *, members: bool = True):
         self.forum = forum
         self.qq = qq
+        # Off, only the list of synced groups is kept current, which the rest goes by.
+        self.members = members
         # Synced groups, the primary one first.
         self.groups: list[int] = []
         # When each member last spoke, as seen here: NapCat's cache only learns it on a refetch.
@@ -75,7 +77,7 @@ class Sync:
         while True:
             try:
                 await self.refresh_groups()
-                for group in self.groups:
+                for group in self.groups if self.members else []:
                     await self.full(group)
             except Exception:
                 log.exception("Member sync failed")
@@ -83,7 +85,7 @@ class Sync:
 
     async def notice(self, notice: dict[str, Any]) -> None:
         group = notice.get("group_id")
-        record = delta(notice) if group in self.groups else None
+        record = delta(notice) if self.members and group in self.groups else None
         if record is None:
             return
         if notice["notice_type"] == "group_increase":

@@ -89,6 +89,9 @@ async def test_a_newcomer_comes_with_their_cached_record():
     notice = {"notice_type": "group_increase", "group_id": GROUP, "user_id": 3, "time": 42}
     await sync.notice(notice)
     await sync.notice(notice | {"group_id": 1})
+    off = Sync(forum, FakeQQ([]), members=False)
+    off.groups = [GROUP]
+    await off.notice(notice)
     assert sent == [
         (
             "PATCH",
