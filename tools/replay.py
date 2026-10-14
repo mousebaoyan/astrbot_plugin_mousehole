@@ -1,12 +1,11 @@
 """Replays an exported group chat through auto-archiving, offline (docs/replay.md).
 
-uv run python -m tools.replay data/export.json --boards data/boards.json --out replay-out/a
+uv run python -m tools.replay data/export.json --config data/config.json --out replay-out/a
 """
 
 import argparse
 import asyncio
 import json
-import os
 import re
 import sys
 from collections import Counter, defaultdict
@@ -17,7 +16,8 @@ from typing import Any
 import httpx
 
 from mousehole import judge
-from mousehole.archive import FOLLOW_FOR, Archive, Message
+from mousehole.archive import Archive, Message, Tuning
+from mousehole.llm import LLM, Embedder, Settings
 from mousehole.similar import Index
 from tools.fake_forum import FakeForum, Thread, bigrams
 
@@ -31,6 +31,18 @@ CATEGORIZE = """给论坛上的这个提问写一个类别和几个标签，用�
 - category：不超过 6 个字，说明它属于哪类问题，比如“夏令营”“导师联系”“选校定位”。
 - tags：最多 5 个，可以是话题、院校或方向。
 只输出一个 JSON 对象：{"category": "……", "tags": ["……"]}"""
+CATEGORIZE_SCHEMA = {
+    "name": "category",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "category": {"type": "string"},
+            "tags": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["category", "tags"],
+        "additionalProperties": False,
+    },
+}
 # Titles sharing this much are listed as maybe the same question.
 SIMILAR_TITLES = 0.3
 
@@ -70,38 +82,6 @@ def convert(export: dict) -> tuple[int, int, list[tuple[Message, str, str]]]:
 
 
 # ---- The models
-
-
-class OpenAICompatible:
-    def __init__(self, base: str, key: str, model: str):
-        headers = {"Authorization": f"Bearer {key}"} if key else {}
-        self.http = httpx.AsyncClient(base_url=base.rstrip("/"), headers=headers, timeout=600)
-        self.model = model
-
-    async def complete(self, system: str, prompt: str) -> tuple[str, int, int]:
-        res = await self.http.post(
-            "/chat/completions",
-            json={
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": prompt},
-                ],
-            },
-        )
-        res.raise_for_status()
-        data = res.json()
-        usage = data.get("usage") or {}
-        return (
-            data["choices"][0]["message"]["content"],
-            usage.get("prompt_tokens", 0),
-            usage.get("completion_tokens", 0),
-        )
-
-    async def embed(self, texts: list[str]) -> list[list[float]]:
-        res = await self.http.post("/embeddings", json={"model": self.model, "input": texts})
-        res.raise_for_status()
-        return [d["embedding"] for d in sorted(res.json()["data"], key=lambda d: d["index"])]
 
 
 class Cached(httpx.AsyncBaseTransport):
@@ -162,26 +142,35 @@ async def replay(args: argparse.Namespace) -> None:
     now = 0.0
     fake = FakeForum(boards, tags, clock=lambda: now)
     forum = fake.client()
-    llm = OpenAICompatible(
-        os.environ["LLM_BASE_URL"], os.environ["LLM_API_KEY"], os.environ["LLM_MODEL"]
-    )
-    embedder = OpenAICompatible(
-        os.environ["EMB_BASE_URL"], os.environ.get("EMB_API_KEY", ""), os.environ["EMB_MODEL"]
-    )
+    # The plugin's own settings, so replay asks the models just as it will.
+    config = json.loads(Path(args.config).read_text(encoding="utf-8-sig"))
+    # Replay's days aren't today's: no daily limit.
+    llm = LLM(Settings.of(config["llm"] | {"tokens_per_day": 0}))
+    e = config["embedding"]
+    embedder = Embedder(e["base_url"], e["api_key"], e["model"])
     if args.no_onejev:
         onejev: Any = Passing()
     else:
         cache = Path(args.out).parent / "onejev-cache.jsonl"
-        onejev = judge.OneJev(args.onejev, Cached(cache))
+        o = config["onejev"]
+        onejev = judge.OneJev(o["url"], o["api_key"], o["model"], Cached(cache))
+    tuning = Tuning.of(config)
     if args.threshold is not None:
-        judge.THRESHOLD = args.threshold
+        tuning.threshold = args.threshold
 
     async def unreachable(seconds: float) -> None:
         sys.exit("OneJev can't be reached")
 
-    index = Index(forum, embedder.embed, "replay", None)
+    index = Index(forum, embedder.embed, e["model"], None, e["min_similarity"])
     archive = Archive(
-        forum, onejev, llm.complete, index, prefixes=["/"], sleep=unreachable, clock=lambda: now
+        forum,
+        onejev,
+        llm.complete,
+        index,
+        prefixes=["/"],
+        tuning=tuning,
+        sleep=unreachable,
+        clock=lambda: now,
     )
     await archive.refresh_taxonomy()
     reports: list[dict] = []
@@ -212,7 +201,7 @@ async def replay(args: argparse.Namespace) -> None:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
     (out / "threads.md").write_text(threads_md(fake, shown, reports), encoding="utf-8")
     kept = sum(chat.count for chat in archive.chats.values())
-    summary = summary_md(fake, shown, kept, reports, args.threshold == 0)
+    summary = summary_md(fake, shown, kept, reports, tuning, args.threshold == 0)
     (out / "summary.md").write_text(summary, encoding="utf-8")
     if not args.boards:
         categories = await categories_md(fake, llm)
@@ -266,7 +255,9 @@ def reason(text: str) -> str:
     return re.sub(r"\d+", "n", re.sub(r"\b[NQAC]\d+\b", "X", text))
 
 
-def summary_md(fake: FakeForum, shown: dict, kept: int, reports: list[dict], table: bool) -> str:
+def summary_md(
+    fake: FakeForum, shown: dict, kept: int, reports: list[dict], tuning: Tuning, table: bool
+) -> str:
     rounds = [r for r in reports if "numbers" in r]
     days = max(1, len({datetime.fromtimestamp(m.time).date() for m, _, _ in shown.values()}))
     screened = [r for r in rounds if r["scores"] is not None]
@@ -295,7 +286,7 @@ def summary_md(fake: FakeForum, shown: dict, kept: int, reports: list[dict], tab
     lines += [f"| {name} | {value} | {round(value / days, 1)} |" for name, value in rows]
     lines += ["", "## 丢掉的项", "", "| 原因 | 次数 |", "| --- | --- |"]
     lines += [f"| {r} | {n} |" for r, n in dropped.most_common()]
-    lines += ["", "## 疑似重复的帖子", ""] + suspects(fake, shown)
+    lines += ["", "## 疑似重复的帖子", ""] + suspects(fake, shown, tuning.follow_messages)
     if table:
         lines += [
             "",
@@ -313,7 +304,7 @@ def summary_md(fake: FakeForum, shown: dict, kept: int, reports: list[dict], tab
     return "\n".join(lines) + "\n"
 
 
-def suspects(fake: FakeForum, shown: dict) -> list[str]:
+def suspects(fake: FakeForum, shown: dict, follow: int) -> list[str]:
     """Threads with titles much alike, and threads their asker opened while a question of theirs
     was still followed."""
     threads = sorted(
@@ -325,22 +316,23 @@ def suspects(fake: FakeForum, shown: dict) -> list[str]:
             a, b = bigrams(t.title), bigrams(older.title)
             if a and b and len(a & b) / len(a | b) >= SIMILAR_TITLES:
                 found.append(f"- 标题相近：「{older.title}」和「{t.title}」")
-            if older.author == t.author and following(older, t, shown):
+            if older.author == t.author and following(older, t, shown, follow):
                 found.append(f"- 同一个人还在跟进时又开帖：「{older.title}」和「{t.title}」")
     return found or ["（没有）"]
 
 
-def following(older: Thread, newer: Thread, shown: dict) -> bool:
+def following(older: Thread, newer: Thread, shown: dict, follow: int) -> bool:
     last = max(shown[s][0].number for p in older.posts for s in p.sources)
     first = min(shown[s][0].number for s in newer.posts[0].sources)
-    return 0 < first - last <= FOLLOW_FOR
+    return 0 < first - last <= follow
 
 
-async def categories_md(fake: FakeForum, llm: OpenAICompatible) -> str:
+async def categories_md(fake: FakeForum, llm: LLM) -> str:
     categories: dict[str, list[str]] = defaultdict(list)
     tags: Counter[str] = Counter()
     for t in fake.threads.values():
-        answer, _, _ = await llm.complete(CATEGORIZE, f"标题：{t.title}\n{t.posts[0].body}")
+        prompt = f"标题：{t.title}\n{t.posts[0].body}"
+        answer, _, _ = await llm.complete(CATEGORIZE, prompt, CATEGORIZE_SCHEMA)
         try:
             raw = judge.extract_json(answer)
             categories[str(raw["category"])].append(t.title)
@@ -358,12 +350,14 @@ async def categories_md(fake: FakeForum, llm: OpenAICompatible) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Replay an exported group chat (docs/replay.md)")
     parser.add_argument("export", help="QQChatExporter 导出的 JSON")
+    parser.add_argument(
+        "--config", required=True, help="插件的配置文件（AstrBot 的 data/config 下）"
+    )
     parser.add_argument("--out", required=True, help="结果放在哪个目录")
     parser.add_argument("--boards", help="版块和标签的 JSON；不给就是自由分类")
     parser.add_argument("--from", dest="start", help="从这天开始（YYYY-MM-DD）")
     parser.add_argument("--until", help="到这天为止，含这天（YYYY-MM-DD）")
     parser.add_argument("--threshold", type=float, help="OneJev 的门槛；0 时每轮都交给大模型")
-    parser.add_argument("--onejev", default="http://127.0.0.1:8000", help="OneJev 的地址")
     parser.add_argument("--no-onejev", action="store_true", help="不问 OneJev，每轮都交给大模型")
     asyncio.run(replay(parser.parse_args()))
 

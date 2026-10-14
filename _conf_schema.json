@@ -61,7 +61,7 @@
         "description": "自动收录群里的提问和回答",
         "type": "bool",
         "default": false,
-        "hint": "先用回放调好、在论坛上建好收录用的版块再打开（见仓库的 docs/replay.md）。"
+        "hint": "先配好下面的 OneJev、大模型和嵌入模型，用回放调好、在论坛上建好收录用的版块再打开（见仓库的 docs/replay.md）。"
       },
       "groups": {
         "description": "收录哪些群",
@@ -69,24 +69,179 @@
         "default": [],
         "hint": "填群号；空的收录论坛上关联的所有群。"
       },
-      "onejev_url": {
-        "description": "OneJev 服务的地址",
+      "round_messages": {
+        "description": "一轮最多几条消息",
+        "type": "int",
+        "default": 30,
+        "hint": "攒够这么多条就交给模型判断。用回放调（docs/replay.md）。"
+      },
+      "round_minutes": {
+        "description": "一轮最多等几分钟",
+        "type": "float",
+        "default": 10,
+        "hint": "一轮的第一条消息之后过了这么久，不够条数也交给模型。要赶在 QQ 图片链接过期前转存，不要超过 60。"
+      },
+      "follow_messages": {
+        "description": "跟进一个问题多少条消息",
+        "type": "int",
+        "default": 200,
+        "hint": "问题最后一条相关消息之后，群里又过了这么多条，就不再跟进。"
+      }
+    }
+  },
+  "onejev": {
+    "description": "OneJev（自动收录的初筛）",
+    "type": "object",
+    "items": {
+      "url": {
+        "description": "服务地址",
         "type": "string",
         "default": "http://127.0.0.1:8000",
-        "hint": "用它初筛每一轮消息。连不上时收录暂停，不改用大模型。"
+        "hint": "连不上时收录暂停，不改用大模型。"
       },
-      "llm_provider": {
-        "description": "整理用的大模型",
+      "api_key": {
+        "description": "API Key",
         "type": "string",
         "default": "",
-        "_special": "select_provider",
-        "hint": "空的用 AstrBot 的默认模型。"
+        "secret": true,
+        "hint": "服务没设密钥就留空。"
       },
-      "embedding_provider": {
-        "description": "查重用的嵌入模型 ID",
+      "model": {
+        "description": "模型名称",
+        "type": "string",
+        "default": "jev-latest"
+      },
+      "threshold": {
+        "description": "交给大模型的门槛",
+        "type": "float",
+        "default": 0.3,
+        "slider": {
+          "min": 0,
+          "max": 1,
+          "step": 0.05
+        },
+        "hint": "一轮里“有人提问”或“在回答跟进的问题”的概率到了这个数，才交给大模型整理。低了多花 token，高了会漏。用回放调。"
+      }
+    }
+  },
+  "llm": {
+    "description": "大模型（自动收录的整理）",
+    "type": "object",
+    "items": {
+      "base_url": {
+        "description": "接口地址",
+        "type": "string",
+        "default": "https://chat.ecnu.edu.cn/open/api/v1",
+        "hint": "OpenAI 兼容的地址，到 /v1 为止。插件直接调用，不经过 AstrBot 的模型配置：AstrBot 传不了结构化输出和思考参数。"
+      },
+      "api_key": {
+        "description": "API Key",
         "type": "string",
         "default": "",
-        "hint": "AstrBot 里配好的嵌入模型（bge-m3）的 ID。"
+        "secret": true
+      },
+      "model": {
+        "description": "模型",
+        "type": "string",
+        "default": "ecnu-plus"
+      },
+      "structured_output": {
+        "description": "结构化输出",
+        "type": "string",
+        "default": "json_schema",
+        "options": [
+          "json_schema",
+          "json_object",
+          "off"
+        ],
+        "hint": "json_schema：按插件给的格式约束输出，ECNU 的模型支持；json_object：只要求输出 JSON；off：不传，接口不支持 response_format 时用。"
+      },
+      "thinking": {
+        "description": "思考模式",
+        "type": "string",
+        "default": "enabled",
+        "options": [
+          "enabled",
+          "disabled",
+          "omit"
+        ],
+        "hint": "enabled 开、disabled 关（ECNU 的 thinking 参数）；omit：不传，接口不认这个参数时用。"
+      },
+      "reasoning_effort": {
+        "description": "思考程度",
+        "type": "string",
+        "default": "low",
+        "options": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "hint": "只在开了思考时生效。ecnu-plus 可选 low、medium、xhigh；ecnu-max 可选 low、high、max。越高越慢、token 越多。"
+      },
+      "temperature": {
+        "description": "温度",
+        "type": "float",
+        "default": 0.2,
+        "slider": {
+          "min": 0,
+          "max": 2,
+          "step": 0.1
+        },
+        "hint": "只在不思考时传；思考时用模型的默认值。"
+      },
+      "max_tokens": {
+        "description": "每次最多输出多少 token",
+        "type": "int",
+        "default": 8192,
+        "hint": "包括思考的部分。"
+      },
+      "timeout_seconds": {
+        "description": "一次调用最多等几秒",
+        "type": "int",
+        "default": 180
+      },
+      "tokens_per_day": {
+        "description": "每天最多用多少 token",
+        "type": "int",
+        "default": 1000000,
+        "hint": "输入和输出合计。用完后当天不再整理，第二天恢复。0 不限。ECNU 每 7 天 2 万积分，ecnu-plus 输入每百万 token 100 积分、输出 400 积分，8–18 点翻倍。"
+      }
+    }
+  },
+  "embedding": {
+    "description": "嵌入模型（自动收录的查重）",
+    "type": "object",
+    "items": {
+      "base_url": {
+        "description": "接口地址",
+        "type": "string",
+        "default": "http://127.0.0.1:11434/v1",
+        "hint": "OpenAI 兼容的地址。默认是本机 Ollama；也可以用 ECNU 的 https://chat.ecnu.edu.cn/open/api/v1，模型填 ecnu-embedding-small（也是 bge-m3）。换模型后插件会重建帖子的向量索引。"
+      },
+      "api_key": {
+        "description": "API Key",
+        "type": "string",
+        "default": "",
+        "secret": true,
+        "hint": "Ollama 留空。"
+      },
+      "model": {
+        "description": "模型",
+        "type": "string",
+        "default": "bge-m3"
+      },
+      "min_similarity": {
+        "description": "语义相似的门槛",
+        "type": "float",
+        "default": 0.5,
+        "slider": {
+          "min": 0,
+          "max": 1,
+          "step": 0.05
+        },
+        "hint": "和新提问的相似度到这个数的帖子，才拿去让大模型判断是不是同一个问题。用回放调。"
       }
     }
   }

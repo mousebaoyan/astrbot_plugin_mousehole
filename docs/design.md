@@ -51,7 +51,8 @@ QQ 的风控会识别"像机器人"的账号，插件尽量让 bot 的操作和�
 - 插件主动连接论坛（REST 和事件流），所在的机器能访问外网就行，论坛不反向连接插件。
 - 自动收录还要：
   - [OneJev](https://github.com/OmniJev/OneJev) 服务做初筛。维护者家里的电脑上跑 4B 模型，一次判断约 10 秒，和 message_guard 插件共用。它连不上时收录暂停，不改用大模型（第 8.2 节）。
-  - AstrBot 里配好的一个大模型，和一个嵌入模型（embedding，查重用，第 8.5 节）。嵌入模型用 bge-m3，和 OneJev 跑在同一台电脑上（比如用 Ollama），在 AstrBot 里配成嵌入模型。
+  - 一个大模型（整理）和一个嵌入模型（embedding，查重，第 8.5 节），都走 OpenAI 兼容接口。大模型现在用 ECNU 的 `ecnu-plus`；嵌入模型用 bge-m3，和 OneJev 跑在同一台电脑上（比如用 Ollama），也可以用 ECNU 的 `ecnu-embedding-small`。
+  - 插件直接调这两个接口，不经过 AstrBot 的模型配置：AstrBot 的 `llm_generate` 会丢掉每次请求自带的参数，传不了结构化输出和思考模式。回放用的也是同一份客户端和同一份配置（[回放实验](replay.md)第 3 节）。
 - 依赖只有 httpx 和 numpy，AstrBot 已经自带。
 - 论坛的 token：管理员在后台的 bot 页创建，bot 的 QQ 号填机器人自己的，范围选 `read`、`act`、`sync`、`auth`、`events`。
 - AstrBot 开了会话白名单的，要放行已同步的群和私聊。
@@ -71,11 +72,22 @@ QQ 的风控会识别"像机器人"的账号，插件尽量让 bot 的操作和�
 | `lottery.groups` | 空 | 发到哪些群，空的发到主群 |
 | `archive.enabled` | 关 | 自动收录（第 8 节）。回放调好、论坛上建好收录用的版块再打开 |
 | `archive.groups` | 空 | 收录哪些群，空的是论坛上关联的所有群 |
-| `archive.onejev_url` | `http://127.0.0.1:8000` | OneJev 服务的根地址 |
-| `archive.llm_provider` | 空 | 整理用的大模型，从 AstrBot 配好的里选；空的用 AstrBot 的默认模型 |
-| `archive.embedding_provider` | 空 | 查重用的嵌入模型在 AstrBot 里的 ID。AstrBot 的配置界面只能选对话模型，所以这里手填 |
+| `archive.round_messages`、`archive.round_minutes` | 30、10 | 一轮最多几条、最多等几分钟（第 8.1 节） |
+| `archive.follow_messages` | 200 | 跟进多少条消息（第 8.6 节） |
+| `onejev.url`、`onejev.api_key`、`onejev.model` | `http://127.0.0.1:8000`、空、`jev-latest` | OneJev 服务 |
+| `onejev.threshold` | 0.3 | 交给大模型的门槛（第 8.2 节） |
+| `llm.base_url`、`llm.api_key`、`llm.model` | ECNU 的地址、空、`ecnu-plus` | 大模型，OpenAI 兼容接口 |
+| `llm.structured_output` | `json_schema` | `json_schema` 按插件给的格式约束输出；`json_object` 只要求是 JSON；`off` 不传 |
+| `llm.thinking`、`llm.reasoning_effort` | `enabled`、`low` | 思考模式和思考程度（ECNU 的 `thinking`、`reasoning_effort`）；`omit` 是不传，给不认这些参数的接口用 |
+| `llm.temperature` | 0.2 | 只在不思考时传 |
+| `llm.max_tokens`、`llm.timeout_seconds` | 8192、180 | 每次最多输出多少 token（含思考）、最多等几秒 |
+| `llm.tokens_per_day` | 100 万 | 每天最多用多少 token，用完当天不再整理；0 不限 |
+| `embedding.base_url`、`embedding.api_key`、`embedding.model` | 本机 Ollama、空、`bge-m3` | 嵌入模型，OpenAI 兼容接口；换了地址或模型，向量索引重建 |
+| `embedding.min_similarity` | 0.5 | 语义相似的门槛（第 8.5 节） |
 
-同步哪些群在论坛后台关联，插件不另外配。打开了收录、却没配好 OneJev 或嵌入模型时，插件记一条错误，其他功能照常。频率、门槛、间隔都写成常量，见下面各节。
+同步哪些群在论坛后台关联，插件不另外配。打开了收录、却没填好 OneJev、大模型或嵌入模型时，插件记一条错误，其他功能照常。
+
+回放要调的数（门槛、一轮的大小、跟进多久、相似的门槛）做成配置，调好后改默认值，不用改代码。其他频率和间隔写成常量，见下面各节。
 
 ## 5. 结构
 
@@ -89,7 +101,7 @@ NapCat ⇄ AstrBot（aiocqhttp）
                └ 事件流 → 开奖结果、个性签名
                      ⇅ REST、SSE（Bearer token，X-Act-As）
                   鼠洞论坛
-自动收录另外调用 OneJev 和 AstrBot 里的大模型
+自动收录另外调用 OneJev、大模型和嵌入模型（OpenAI 兼容接口）
 ```
 
 | 模块 | 职责 |
@@ -204,7 +216,7 @@ OneJev 连不上时，这一轮等着，每分钟重试一次，后面的轮次�
 
 ### 8.3 大模型整理
 
-通过初筛的轮次，调用一次 `archive.llm_provider`。这一次做完所有事：
+通过初筛的轮次，调用一次大模型（`llm`）。这一次做完所有事：
 - 认出新的提问，起标题，选版块和标签；
 - 把同一个人的几条整理成一层；
 - 判断回答的是哪个问题；
@@ -249,6 +261,8 @@ OneJev 连不上时，这一轮等着，每分钟重试一次，后面的轮次�
 - `new` 是新的一层：提问开新帖子，回答回复在问题所在的帖子里。`question` 填跟进中的问题（Q1）或这一轮新的提问（N1）。`reply_to` 填它回复的那一层，回复的是问题本身时为空。
 - `edit` 是更新已有的一层：`messages` 是新补充的消息，`body` 是用这一层原来的消息加上新补充的重新整理出的完整正文，`title` 只在主楼、需要改时填。每次都从原消息整理，不在上一版正文上改，大模型写偏了的地方不会一版版累积下去。
 - 一层只收一个人的消息，每条消息只收进一层。
+
+开了结构化输出（`llm.structured_output` 为 `json_schema`）时，请求带上输出格式的 JSON Schema（`judge.py` 的 `ORGANIZE_SCHEMA`），ECNU 用受约束的解码保证输出一定是这个形状；内容对不对仍由下面的检查管。
 
 规矩写在系统提示词里：
 - 提问要自己能看懂、别人能回答。只有接着前文才看得懂的追问，算对应问题的回答，类型是 `answer`。附和、道谢、闲聊、玩笑、反问都不收。
@@ -295,14 +309,14 @@ OneJev 连不上时，这一轮等着，每分钟重试一次，后面的轮次�
 #### 找候选
 
 同一个问题换个说法很常见（"拿了优营不去会怎样"和"夏令营 offer 能鸽吗"），只按字面找会漏，所以两种一起用：
-- **语义**：插件用 `archive.embedding_provider` 给论坛上每个帖子的标题和主楼开头算向量，存在 `threads.npz`，跟着事件流更新（新帖、主楼改了、帖子删了）。启动时没有索引或者换了模型，就从论坛分页取回全部帖子重建。新提问的标题加正文也算一个向量，取余弦相似度最高的 5 个。帖子上万个也只是几十 MB，直接用 numpy 逐个算，不用向量数据库。
+- **语义**：插件用嵌入模型（`embedding`）给论坛上每个帖子的标题和主楼开头算向量，存在 `threads.npz`，跟着事件流更新（新帖、主楼改了、帖子删了）。启动时没有索引或者换了模型，就从论坛分页取回全部帖子重建。新提问的标题加正文也算一个向量，取余弦相似度最高的 5 个。帖子上万个也只是几十 MB，直接用 numpy 逐个算，不用向量数据库。
 - **字面**：论坛的 `GET /search/similar`，取最像的 5 个。它把中文切成相邻两个字，任何一个对上就算，按对上的密度排序，能补上学校名、缩写这类向量不一定分得清的。
 
 两边合起来去掉重复，最多 10 个；语义相似度低于门槛（先定 0.5，用回放调）、字面也没对上的不算。没有候选就直接发帖。
 
 #### 判断
 
-有候选时调用一次 `archive.llm_provider`：新问题，和每个候选的标题、版块、日期、回复数、主楼开头 100 个字，问哪个和它是同一件事、旧帖子的回答能不能直接回答它。
+有候选时调用一次大模型：新问题，和每个候选的标题、版块、日期、回复数、主楼开头 100 个字，问哪个和它是同一件事、旧帖子的回答能不能直接回答它。
 - 问的是自己的情况（"我这个条件能去哪"），不算和别人重复；问的是不同年份的事，比如今年和去年的夏令营，也不算。
 - 每次一两千 token，一天几十次。
 

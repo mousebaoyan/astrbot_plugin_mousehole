@@ -27,8 +27,16 @@ def text_of(title: str, opening: str) -> str:
 
 
 class Index:
-    def __init__(self, forum: Forum, embed: Embed, model: str, path: Path | None):
+    def __init__(
+        self,
+        forum: Forum,
+        embed: Embed,
+        model: str,
+        path: Path | None,
+        min_similarity: float = MIN_SIMILARITY,
+    ):
         self.forum = forum
+        self.min_similarity = min_similarity
         self.embed = embed
         self.model = model
         # None keeps it in memory only, as replay does.
@@ -93,7 +101,7 @@ class Index:
             query = normalized(await self.embed([text_of(title, body)]))[0]
             similarity = self.vectors @ query
             for i in np.argsort(-similarity)[:SEMANTIC]:
-                if similarity[i] >= MIN_SIMILARITY:
+                if similarity[i] >= self.min_similarity:
                     found.append(int(self.ids[i]))
         text = f"{title}\n{body}"[:2000]
         literal = await self.forum.call("GET", "/search/similar", params={"text": text})

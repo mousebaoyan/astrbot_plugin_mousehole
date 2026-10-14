@@ -21,7 +21,7 @@ class Script:
         ]
         self.prompts: list[tuple[str, str]] = []
 
-    async def __call__(self, system: str, prompt: str) -> tuple[str, int, int]:
+    async def __call__(self, system: str, prompt: str, schema: dict) -> tuple[str, int, int]:
         self.prompts.append((system, prompt))
         return self.answers.pop(0), 1000, 100
 
@@ -44,7 +44,7 @@ class FakeOneJev(judge.OneJev):
             answers = {k: {"type": "noul", "noul": self.scores[k]} for k in asked}
             return httpx.Response(200, json={"answers": answers})
 
-        super().__init__("http://onejev.test", httpx.MockTransport(handle))
+        super().__init__("http://onejev.test", transport=httpx.MockTransport(handle))
 
 
 async def embed(texts: list[str]) -> list[list[float]]:

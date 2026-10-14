@@ -15,7 +15,7 @@
 | 跟进多少条 | 200 条 | 看回答离问题有多远，有多少落在 200 条以外 |
 | 版块和标签 | 还没有 | 第 6 节 |
 
-这些数和提示词可以直接改。要改设计第 8 节的规则（收什么、记在谁名下、正文怎么整理、要不要发帖），先问维护者。定下来的数和提示词，同一个提交里写回设计第 8 节。
+这些数和提示词可以直接改。要改设计第 8 节的规则（收什么、记在谁名下、正文怎么整理、要不要发帖），先问维护者。定下来的数写成 `_conf_schema.json` 的默认值，连同提示词在同一个提交里写回设计第 4 节和第 8 节。
 
 ## 2. 数据
 
@@ -82,13 +82,15 @@
 | 时间 | 消息的时间：一轮"等 10 分钟"按消息时间算，不真等 |
 | 论坛 | 内存里的假论坛（`tools/fake_forum.py`，单元测试也用它）：记下发帖、回复和更新，答 `GET /bot/messages`；`GET /search/similar` 按标题和正文的字的二元组重合度找最像的 5 个；版块和标签从 `--boards` 读；图片不真的下载 |
 | OneJev | 真的，`--onejev` 指定地址，默认 `http://127.0.0.1:8000` |
-| 大模型 | 插件里调 AstrBot 的 provider，回放时调 OpenAI 兼容的 `/chat/completions`，地址、密钥和模型从环境变量 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL` 读。用和线上 `archive.llm_provider` 同一个模型 |
-| 嵌入模型 | 回放时调 OpenAI 兼容的 `/embeddings`，环境变量 `EMB_BASE_URL`、`EMB_API_KEY`（Ollama 不用填）、`EMB_MODEL`；用和线上 `archive.embedding_provider` 同一个模型，比如 Ollama 的 `http://127.0.0.1:11434/v1` 和 `bge-m3`。向量索引只放在内存里 |
+| 大模型、嵌入模型、OneJev | 和插件同一份客户端，从 `--config` 读插件的配置：地址、密钥、模型、结构化输出、思考模式都一样。每天的 token 上限不管 |
+| 要调的数 | 门槛、一轮的大小、跟进多久、相似的门槛也从 `--config` 读，`--threshold` 可以临时改门槛 |
+
+`--config` 用 AstrBot 存的插件配置文件 `data/config/astrbot_plugin_mousehole_config.json`，复制一份到 `data/` 再用；里面有密钥，不进 git。调数时改这份副本，定下来后改 `_conf_schema.json` 的默认值，再告诉维护者在插件配置里改。
 
 收录代码只依赖三样东西：论坛的 httpx 客户端（回放时传接到假论坛的 `MockTransport`），一个"给系统提示词和提示词、返回文字和 token 用量"的函数，一个"给一批文字、返回向量"的函数。
 
 ```bash
-uv run python -m tools.replay data/export.json --boards data/boards.json --out replay-out/day1-a --until 2026-10-11
+uv run python -m tools.replay data/export.json --config data/config.json --boards data/boards.json --out replay-out/day1-a --until 2026-10-11
 ```
 
 | 参数 | 作用 |
@@ -96,7 +98,8 @@ uv run python -m tools.replay data/export.json --boards data/boards.json --out r
 | `--boards FILE` | 版块和标签：`{"boards": [{"slug", "name", "description"}], "tags": [{"name", "kind"}]}`，字段同论坛 `GET /boards`、`GET /tags` 的返回；不给就是自由分类（第 6 节） |
 | `--out DIR` | 结果放在哪 |
 | `--from`、`--until` | 只跑这段时间的消息，`YYYY-MM-DD`，都含当天 |
-| `--threshold X` | OneJev 的门槛，不给用代码里的常量；给 0 就每一轮都交给大模型，同时记下 OneJev 的分数（第 5.1 节） |
+| `--config FILE` | 插件的配置文件，见上 |
+| `--threshold X` | OneJev 的门槛，不给用配置里的；给 0 就每一轮都交给大模型，同时记下 OneJev 的分数（第 5.1 节） |
 | `--no-onejev` | 不问 OneJev，每一轮都交给大模型；OneJev 不在线时调提示词用 |
 
 OneJev 一次 10 秒左右，3 天的记录约 170 轮，跑一遍要半小时。它的结果缓存在 `replay-out/onejev-cache.jsonl`，以完整的请求体为键，只改大模型的提示词时重跑不用再等；改了 OneJev 的输入或问题自然就对不上，会重新问。

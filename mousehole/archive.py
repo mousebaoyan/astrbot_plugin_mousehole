@@ -15,21 +15,43 @@ from typing import Any
 
 from . import judge
 from .forum import Forum, ForumError
+from .llm import BudgetExhausted
 from .similar import Index
 
 log = logging.getLogger("astrbot.mousehole")
 
-# (system prompt, prompt) → (answer, input tokens, output tokens)
-Complete = Callable[[str, str], Awaitable[tuple[str, int, int]]]
+# (system prompt, prompt, JSON schema) → (answer, input tokens, output tokens)
+Complete = Callable[[str, str, dict], Awaitable[tuple[str, int, int]]]
 
-# A round closes at this many messages, or this long after its first. Tuned by replay.
-ROUND_SIZE = 30
-ROUND_SECONDS = 600
+
+@dataclass
+class Tuning:
+    """What replay tunes (docs/replay.md §1), which the plugin's settings may change."""
+
+    # A round goes to the LLM when either OneJev answer reaches this. Low on purpose: a
+    # question missed is worse than tokens spent.
+    threshold: float = 0.3
+    # A round closes at this many messages, or this long after its first.
+    round_messages: int = 30
+    round_minutes: float = 10
+    # A question is followed until this many messages have passed its last related one.
+    follow_messages: int = 200
+
+    @classmethod
+    def of(cls, config: dict) -> Tuning:
+        """From the plugin's settings (_conf_schema.json)."""
+        archive = config["archive"]
+        return cls(
+            threshold=config["onejev"]["threshold"],
+            round_messages=archive["round_messages"],
+            round_minutes=archive["round_minutes"],
+            follow_messages=archive["follow_messages"],
+        )
+
+
 # Messages before a round that the models see too.
 SCREEN_BEFORE = 10
 ORGANIZE_BEFORE = 20
-# A question is followed until this many messages have passed its last related one.
-FOLLOW_FOR = 200
 # Messages kept per group, for context, quotes and recalls.
 KEPT = 1000
 ONEJEV_RETRY = 60
@@ -156,6 +178,7 @@ class Archive:
         index: Index,
         *,
         prefixes: list[str],
+        tuning: Tuning | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         clock: Callable[[], float] = time.time,
     ):
@@ -163,6 +186,7 @@ class Archive:
         self.onejev = onejev
         self.complete = complete
         self.index = index
+        self.tuning = tuning or Tuning()
         self.prefixes = [p for p in prefixes if p]
         self.sleep = sleep
         self.clock = clock
@@ -188,12 +212,12 @@ class Archive:
         if not chat.pending:
             chat.started = m.time
         chat.pending.append(m)
-        if len(chat.pending) >= ROUND_SIZE:
+        if len(chat.pending) >= self.tuning.round_messages:
             self.close(chat)
 
     def tick(self, now: float) -> None:
         for chat in self.chats.values():
-            if chat.pending and now - chat.started >= ROUND_SECONDS:
+            if chat.pending and now - chat.started >= self.tuning.round_minutes * 60:
                 self.close(chat)
 
     def close(self, chat: Chat) -> None:
@@ -243,6 +267,8 @@ class Archive:
                     report["done"],
                     report["dropped"],
                 )
+            except BudgetExhausted as e:
+                log.warning("Archiving skips a round: the LLM's daily tokens are used up (%s)", e)
             except Exception:
                 log.exception("Archiving failed")
             self.tick(self.clock())
@@ -303,9 +329,9 @@ class Archive:
         lines += [self.floor_text(chat, names[a], a, names) for a in q.answers]
         return "\n".join(lines)
 
-    async def ask(self, report: dict, system: str, prompt: str) -> str:
+    async def ask(self, report: dict, system: str, prompt: str, schema: dict) -> str:
         started = time.monotonic()
-        answer, input_tokens, output_tokens = await self.complete(system, prompt)
+        answer, input_tokens, output_tokens = await self.complete(system, prompt, schema)
         report["llm"].append(
             {
                 "output": answer,
@@ -335,13 +361,14 @@ class Archive:
         if not messages:
             return report
         last = messages[-1].number
-        chat.following = [q for q in chat.following if last - q.last <= FOLLOW_FOR]
+        follow = self.tuning.follow_messages
+        chat.following = [q for q in chat.following if last - q.last <= follow]
         quoted = await self.follow_quotes(chat, messages)
         questions, floors = self.names(chat)
         names = {floor: ref for ref, floor in floors.items()}
         if not quoted:
             scores = await self.screen(chat, messages, names, report)
-            if scores is None or max(scores.values()) < judge.THRESHOLD:
+            if scores is None or max(scores.values()) < self.tuning.threshold:
                 return report
         before = self.before(chat, messages[0], ORGANIZE_BEFORE)
         prompt = judge.organize_prompt(
@@ -351,7 +378,7 @@ class Archive:
             self.boards,
             self.tags,
         )
-        answer = await self.ask(report, judge.ORGANIZE, prompt)
+        answer = await self.ask(report, judge.ORGANIZE, prompt, judge.ORGANIZE_SCHEMA)
         try:
             raw = judge.extract_json(answer)
         except ValueError:
@@ -692,7 +719,8 @@ class Archive:
             t["created"] = datetime.fromtimestamp(t["created_at"]).strftime("%Y-%m-%d")
         prompt = judge.duplicate_prompt(item.title, item.body, found)
         try:
-            same = judge.extract_json(await self.ask(report, judge.DUPLICATE, prompt)).get("same")
+            answer = await self.ask(report, judge.DUPLICATE, prompt, judge.DUPLICATE_SCHEMA)
+            same = judge.extract_json(answer).get("same")
         except (ValueError, AttributeError):
             log.warning("The LLM's answer on duplicates is not a JSON object; taken as none")
             return None
@@ -736,7 +764,8 @@ class Archive:
             return report
         lines = "\n".join(self.text(chat, x) for x in rest)
         kind = "提问" if floor is q.floor else "回答"
-        answer = await self.ask(report, judge.REORGANIZE, f"这一层是{kind}。剩下的消息：\n{lines}")
+        prompt = f"这一层是{kind}。剩下的消息：\n{lines}"
+        answer = await self.ask(report, judge.REORGANIZE, prompt, judge.REORGANIZE_SCHEMA)
         try:
             raw = judge.extract_json(answer)
             body = raw["body"].strip()

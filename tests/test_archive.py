@@ -1,6 +1,8 @@
 from conftest import BOT, GROUP, FakeOneJev, Script, message
 
-from mousehole.archive import FOLLOW_FOR, ONEJEV_RETRY, ROUND_SECONDS, ROUND_SIZE
+from mousehole.archive import ONEJEV_RETRY, Tuning
+
+TUNING = Tuning()
 
 ASKER, ANSWERER, OTHER = 10001, 10002, 10003
 
@@ -55,12 +57,12 @@ async def test_rounds_close_at_size_or_after_a_while_and_leave_out_what_says_not
     chat = a.chats[GROUP]
     assert [m.id for m in chat.pending] == [1]
 
-    a.tick(chat.started + ROUND_SECONDS - 1)
+    a.tick(chat.started + TUNING.round_minutes * 60 - 1)
     assert a.queue.empty()
-    a.tick(chat.started + ROUND_SECONDS)
+    a.tick(chat.started + TUNING.round_minutes * 60)
     assert a.queue.qsize() == 1
 
-    for i in range(ROUND_SIZE):
+    for i in range(TUNING.round_messages):
         a.add(GROUP, message(10 + i, ASKER, "嗯"), BOT)
     assert a.queue.qsize() == 2
     assert chat.pending == []
@@ -169,7 +171,7 @@ async def test_someone_who_turned_archiving_off_is_left_out_with_answers_to_them
 async def test_questions_are_followed_for_a_while_then_found_again_by_quotes(setup):
     s = await asked(setup, {"new": [], "edit": []})
     s.onejev.scores["question"] = 0.0
-    chatter = [message(10 + i, OTHER, "哈哈") for i in range(FOLLOW_FOR)]
+    chatter = [message(10 + i, OTHER, "哈哈") for i in range(TUNING.follow_messages)]
     await s.round(*chatter)
     chat = s.archive.chats[GROUP]
     assert len(chat.following) == 1

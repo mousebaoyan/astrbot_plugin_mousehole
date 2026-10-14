@@ -5,12 +5,12 @@ import asyncio
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools
-from astrbot.core.provider.provider import EmbeddingProvider
 
-from .mousehole.archive import Archive, Message, plain
+from .mousehole.archive import Archive, Message, Tuning, plain
 from .mousehole.events import Events
 from .mousehole.forum import Forum
 from .mousehole.judge import OneJev
+from .mousehole.llm import LLM, Embedder, Settings
 from .mousehole.login import login, wants_login
 from .mousehole.qq import QQ
 from .mousehole.similar import Index
@@ -25,6 +25,8 @@ class Mousehole(Star):
         self.config = config
         self.forum: Forum | None = None
         self.onejev: OneJev | None = None
+        self.llm: LLM | None = None
+        self.embedder: Embedder | None = None
         self.archive: Archive | None = None
         self.tasks: list[asyncio.Task] = []
 
@@ -38,26 +40,33 @@ class Mousehole(Star):
         self.qq = QQ(self.context.platform_manager, c["platform_id"])
         self.sync = Sync(self.forum, self.qq, members=c["sync_members"])
         index = None
-        archive = c["archive"]
-        self.archive_groups = {int(g) for g in archive["groups"]}
-        embedder = self.context.get_provider_by_id(archive["embedding_provider"])
-        if archive["enabled"] and not (
-            archive["onejev_url"] and isinstance(embedder, EmbeddingProvider)
+        self.archive_groups = {int(g) for g in c["archive"]["groups"]}
+        o, e, m = c["onejev"], c["embedding"], c["llm"]
+        if c["archive"]["enabled"] and not all(
+            (o["url"], m["base_url"], m["model"], e["base_url"], e["model"])
         ):
             # The rest of the plugin works on; only archiving waits for its settings.
             logger.error(
-                "鼠洞插件：自动收录要配好 OneJev 的地址和 AstrBot 里的嵌入模型，现在不收录"
+                "鼠洞插件：自动收录要填好 OneJev、大模型和嵌入模型的地址和模型，现在不收录"
             )
-        elif archive["enabled"]:
-            model = f"{embedder.meta().id}:{embedder.meta().model}"
-            index = Index(self.forum, embedder.get_embeddings, model, data / "threads.npz")
-            self.onejev = OneJev(archive["onejev_url"])
+        elif c["archive"]["enabled"]:
+            self.onejev = OneJev(o["url"], o["api_key"], o["model"])
+            self.llm = LLM(Settings.of(m))
+            self.embedder = Embedder(e["base_url"], e["api_key"], e["model"])
+            index = Index(
+                self.forum,
+                self.embedder.embed,
+                f"{e['base_url']} {e['model']}",
+                data / "threads.npz",
+                e["min_similarity"],
+            )
             self.archive = Archive(
                 self.forum,
                 self.onejev,
-                self.complete,
+                self.llm.complete,
                 index,
                 prefixes=self.context.get_config()["wake_prefix"],
+                tuning=Tuning.of(c),
             )
         lottery = c["lottery"]
         self.events = Events(
@@ -85,20 +94,9 @@ class Mousehole(Star):
         for task in self.tasks:
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
-        if self.forum:
-            await self.forum.close()
-        if self.onejev:
-            await self.onejev.close()
-
-    async def complete(self, system: str, prompt: str) -> tuple[str, int, int]:
-        provider = self.config["archive"]["llm_provider"]
-        if not provider:
-            provider = (await self.context.get_using_provider_async()).meta().id
-        res = await self.context.llm_generate(
-            chat_provider_id=provider, prompt=prompt, system_prompt=system
-        )
-        usage = res.usage
-        return res.completion_text, usage.input if usage else 0, usage.output if usage else 0
+        for client in (self.forum, self.onejev, self.llm, self.embedder):
+            if client:
+                await client.close()
 
     @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
     @filter.event_message_type(filter.EventMessageType.ALL)
