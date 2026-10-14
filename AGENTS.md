@@ -22,7 +22,7 @@
 | `uv sync` | 装好开发环境 |
 | `uv run pytest` | 测试 |
 | `uv run ruff check .`、`uv run ruff format .` | lint 和格式化 |
-| `uv run python tools/replay.py …` | 回放历史群消息，见[回放实验](docs/replay.md) |
+| `uv run python -m tools.replay …` | 回放历史群消息，见[回放实验](docs/replay.md) |
 
 ## 语言
 

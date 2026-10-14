@@ -1,0 +1,372 @@
+"""Replays an exported group chat through auto-archiving, offline (docs/replay.md).
+
+uv run python -m tools.replay data/export.json --boards data/boards.json --out replay-out/a
+"""
+
+import argparse
+import asyncio
+import json
+import os
+import re
+import sys
+from collections import Counter, defaultdict
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import httpx
+
+from mousehole import judge
+from mousehole.archive import FOLLOW_FOR, Archive, Message
+from mousehole.similar import Index
+from tools.fake_forum import FakeForum, Thread, bigrams
+
+FREE_BOARD = {
+    "slug": "free",
+    "name": "未分类",
+    "description": "所有问题都选这个",
+    "post_role": "user",
+}
+CATEGORIZE = """给论坛上的这个提问写一个类别和几个标签，用来设计论坛的版块和标签。
+- category：不超过 6 个字，说明它属于哪类问题，比如“夏令营”“导师联系”“选校定位”。
+- tags：最多 5 个，可以是话题、院校或方向。
+只输出一个 JSON 对象：{"category": "……", "tags": ["……"]}"""
+# Titles sharing this much are listed as maybe the same question.
+SIMILAR_TITLES = 0.3
+
+
+# ---- The export
+
+
+def convert(export: dict) -> tuple[int, int, list[tuple[Message, str, str]]]:
+    """The group, the exporting account (taken for the bot), and each message with its sender's
+    card and text as exported. Recalled messages lost their text, and system ones say nothing."""
+    info = export["chatInfo"]
+    seqs = {m["id"]: int(m["seq"]) for m in export["messages"]}
+    messages = []
+    for m in export["messages"]:
+        if m["system"] or m["recalled"]:
+            continue
+        segments = []
+        for e in m["content"]["elements"]:
+            kind, data = e["type"], e.get("data") or {}
+            if kind == "text":
+                segments.append({"type": "text", "data": {"text": data["text"]}})
+            elif kind == "at":
+                segments.append({"type": "at", "data": {"qq": data.get("uin") or "all"}})
+            elif kind == "reply":
+                quoted = seqs.get(data.get("referencedMessageId"))
+                if quoted is not None:
+                    segments.append({"type": "reply", "data": {"id": str(quoted)}})
+            elif kind == "image":
+                sticker = data.get("subType") == "sticker"
+                image = {"sub_type": 1 if sticker else 0, "url": data.get("url")}
+                segments.append({"type": "image", "data": image})
+            else:
+                segments.append({"type": {"market_face": "mface"}.get(kind, kind), "data": {}})
+        message = Message(int(m["seq"]), int(m["sender"]["uin"]), m["timestamp"] / 1000, segments)
+        messages.append((message, m["sender"]["name"], m["content"]["text"]))
+    return int(info["peerUid"]), int(info["selfUin"]), messages
+
+
+# ---- The models
+
+
+class OpenAICompatible:
+    def __init__(self, base: str, key: str, model: str):
+        headers = {"Authorization": f"Bearer {key}"} if key else {}
+        self.http = httpx.AsyncClient(base_url=base.rstrip("/"), headers=headers, timeout=600)
+        self.model = model
+
+    async def complete(self, system: str, prompt: str) -> tuple[str, int, int]:
+        res = await self.http.post(
+            "/chat/completions",
+            json={
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": prompt},
+                ],
+            },
+        )
+        res.raise_for_status()
+        data = res.json()
+        usage = data.get("usage") or {}
+        return (
+            data["choices"][0]["message"]["content"],
+            usage.get("prompt_tokens", 0),
+            usage.get("completion_tokens", 0),
+        )
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        res = await self.http.post("/embeddings", json={"model": self.model, "input": texts})
+        res.raise_for_status()
+        return [d["embedding"] for d in sorted(res.json()["data"], key=lambda d: d["index"])]
+
+
+class Cached(httpx.AsyncBaseTransport):
+    """OneJev's answers kept by the whole request, so a rerun that only changes the LLM's prompts
+    doesn't wait on it again."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.real = httpx.AsyncHTTPTransport()
+        self.answers: dict[str, str] = {}
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                entry = json.loads(line)
+                self.answers[entry["request"]] = entry["response"]
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        key = request.content.decode()
+        if key not in self.answers:
+            res = await self.real.handle_async_request(request)
+            content = await res.aread()
+            if res.status_code != 200:
+                return httpx.Response(res.status_code, content=content)
+            self.answers[key] = content.decode()
+            with self.path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps({"request": key, "response": self.answers[key]}) + "\n")
+        return httpx.Response(200, text=self.answers[key])
+
+
+class Passing:
+    """Stands in for OneJev with --no-onejev: every round goes on to the LLM."""
+
+    async def screen(self, before: list[str], lines: list[str], titles: list[str]) -> dict:
+        return {"question": 1.0}
+
+
+# ---- The run
+
+
+def day(value: str) -> float:
+    return datetime.strptime(value, "%Y-%m-%d").timestamp()
+
+
+async def replay(args: argparse.Namespace) -> None:
+    export = json.loads(Path(args.export).read_text(encoding="utf-8"))
+    group, bot, messages = convert(export)
+    start = day(args.start) if args.start else float("-inf")
+    end = day(args.until) + 86400 if args.until else float("inf")
+    messages = [m for m in messages if start <= m[0].time < end]
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+
+    if args.boards:
+        taxonomy = json.loads(Path(args.boards).read_text(encoding="utf-8"))
+        boards = [b | {"post_role": "user"} for b in taxonomy["boards"]]
+        tags = [t["name"] for t in taxonomy["tags"]]
+    else:
+        boards, tags = [FREE_BOARD], []
+    now = 0.0
+    fake = FakeForum(boards, tags, clock=lambda: now)
+    forum = fake.client()
+    llm = OpenAICompatible(
+        os.environ["LLM_BASE_URL"], os.environ["LLM_API_KEY"], os.environ["LLM_MODEL"]
+    )
+    embedder = OpenAICompatible(
+        os.environ["EMB_BASE_URL"], os.environ.get("EMB_API_KEY", ""), os.environ["EMB_MODEL"]
+    )
+    if args.no_onejev:
+        onejev: Any = Passing()
+    else:
+        cache = Path(args.out).parent / "onejev-cache.jsonl"
+        onejev = judge.OneJev(args.onejev, Cached(cache))
+    if args.threshold is not None:
+        judge.THRESHOLD = args.threshold
+
+    async def unreachable(seconds: float) -> None:
+        sys.exit("OneJev can't be reached")
+
+    index = Index(forum, embedder.embed, "replay", None)
+    archive = Archive(
+        forum, onejev, llm.complete, index, prefixes=["/"], sleep=unreachable, clock=lambda: now
+    )
+    await archive.refresh_taxonomy()
+    reports: list[dict] = []
+
+    async def drain() -> None:
+        while not archive.queue.empty():
+            report = await archive.handle(archive.queue.get_nowait())
+            reports.append(report)
+            print(
+                f"round {len(reports)}: #{report['numbers'][0]}–#{report['numbers'][1]}"
+                f" scores={report['scores']} done={len(report['done'])}"
+                f" dropped={len(report['dropped'])}",
+                file=sys.stderr,
+            )
+
+    for m, _, _ in messages:
+        now = m.time
+        archive.tick(now)
+        await drain()
+        archive.add(group, m, bot)
+        await drain()
+    archive.tick(float("inf"))
+    await drain()
+
+    shown = {m.id: (m, name, text) for m, name, text in messages}
+    with (out / "rounds.jsonl").open("w", encoding="utf-8") as f:
+        for r in reports:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    (out / "threads.md").write_text(threads_md(fake, shown, reports), encoding="utf-8")
+    kept = sum(chat.count for chat in archive.chats.values())
+    summary = summary_md(fake, shown, kept, reports, args.threshold == 0)
+    (out / "summary.md").write_text(summary, encoding="utf-8")
+    if not args.boards:
+        categories = await categories_md(fake, llm)
+        (out / "categories.md").write_text(categories, encoding="utf-8")
+    print(f"done: {len(fake.threads)} threads, {len(reports)} rounds → {out}", file=sys.stderr)
+
+
+# ---- What it writes
+
+
+def clock(t: float) -> str:
+    return datetime.fromtimestamp(t).strftime("%m-%d %H:%M")
+
+
+def threads_md(fake: FakeForum, shown: dict, reports: list[dict]) -> str:
+    again = {a["post"]: a["how"] for r in reports for a in r.get("asked_again", [])}
+    lines = ["# 本来会发的帖子", ""]
+    for n, t in enumerate(sorted(fake.threads.values(), key=lambda t: t.created_at), 1):
+        state = "（已删除）" if t.deleted else ""
+        lines += [
+            f"## {n}. {t.title}{state}",
+            f"版块 {t.board}，标签 {'、'.join(t.tags) or '无'}",
+            "",
+        ]
+        for p in t.posts:
+            m0 = shown.get(p.sources[0]) if p.sources else None
+            who = m0[1] if m0 else "?"
+            notes = []
+            if p.id in again:
+                notes.append(f"并进来的提问（{again[p.id]}）")
+            if p.reply_to:
+                notes.append(f"回复 {fake.posts[p.reply_to].floor} 楼")
+            if p.deleted:
+                notes.append("已删除")
+            note = f"（{'，'.join(notes)}）" if notes else ""
+            lines += [f"### {p.floor} 楼 · {who}{note}", "", p.body, ""]
+            for i, old in enumerate(p.revisions, 1):
+                lines.append(f"> 第 {i} 版：{old}")
+            if p.revisions:
+                lines.append("")
+            lines.append("原消息：")
+            for source in p.sources:
+                m, name, text = shown[source]
+                lines.append(f"- {clock(m.time)} {name}：{text}")
+            lines.append("")
+    return "\n".join(lines)
+
+
+def reason(text: str) -> str:
+    """A dropped item's reason without its particulars, to count alike ones together."""
+    return re.sub(r"\d+", "n", re.sub(r"\b[NQAC]\d+\b", "X", text))
+
+
+def summary_md(fake: FakeForum, shown: dict, kept: int, reports: list[dict], table: bool) -> str:
+    rounds = [r for r in reports if "numbers" in r]
+    days = max(1, len({datetime.fromtimestamp(m.time).date() for m, _, _ in shown.values()}))
+    screened = [r for r in rounds if r["scores"] is not None]
+    organized = [r for r in rounds if r["llm"]]
+    calls = [c for r in reports for c in r["llm"]]
+    posts = [p for t in fake.threads.values() for p in t.posts]
+    again = Counter(a["how"] for r in reports for a in r.get("asked_again", []))
+    dropped = Counter(reason(d) for r in reports for d in r["dropped"])
+    rows = [
+        ("有效消息（去掉表情、命令和 bot 的）", kept),
+        ("轮次", len(rounds)),
+        ("问过 OneJev 的轮次", len(screened)),
+        ("交给大模型的轮次", len(organized)),
+        ("大模型调用", len(calls)),
+        ("输入 token", sum(c["input_tokens"] for c in calls)),
+        ("输出 token", sum(c["output_tokens"] for c in calls)),
+        ("OneJev 耗时（秒）", round(sum(r.get("onejev_seconds", 0) for r in rounds))),
+        ("大模型耗时（秒）", round(sum(c["seconds"] for c in calls))),
+        ("新帖", len(fake.threads)),
+        ("回复", sum(p.floor > 1 for p in posts) - sum(again.values())),
+        ("更新", sum(len(p.revisions) for p in posts)),
+        ("same_as 并进旧帖", again["same_as"]),
+        ("查重并进旧帖", again["search"]),
+    ]
+    lines = [f"# 回放结果（{days} 天）", "", "| 项 | 总数 | 每天 |", "| --- | --- | --- |"]
+    lines += [f"| {name} | {value} | {round(value / days, 1)} |" for name, value in rows]
+    lines += ["", "## 丢掉的项", "", "| 原因 | 次数 |", "| --- | --- |"]
+    lines += [f"| {r} | {n} |" for r, n in dropped.most_common()]
+    lines += ["", "## 疑似重复的帖子", ""] + suspects(fake, shown)
+    if table:
+        lines += [
+            "",
+            "## 门槛（第 5.1 节）",
+            "",
+            "| 门槛 | 漏掉的 | 放过去的 |",
+            "| --- | --- | --- |",
+        ]
+        wanted = [r for r in screened if r["done"]]
+        for step in range(1, 10):
+            t = step / 10
+            missed = sum(max(r["scores"].values()) < t for r in wanted) / max(1, len(wanted))
+            passed = sum(max(r["scores"].values()) >= t for r in screened) / max(1, len(screened))
+            lines.append(f"| {t:.1f} | {missed:.0%} | {passed:.0%} |")
+    return "\n".join(lines) + "\n"
+
+
+def suspects(fake: FakeForum, shown: dict) -> list[str]:
+    """Threads with titles much alike, and threads their asker opened while a question of theirs
+    was still followed."""
+    threads = sorted(
+        (t for t in fake.threads.values() if not t.deleted), key=lambda t: t.created_at
+    )
+    found = []
+    for i, t in enumerate(threads):
+        for older in threads[:i]:
+            a, b = bigrams(t.title), bigrams(older.title)
+            if a and b and len(a & b) / len(a | b) >= SIMILAR_TITLES:
+                found.append(f"- 标题相近：「{older.title}」和「{t.title}」")
+            if older.author == t.author and following(older, t, shown):
+                found.append(f"- 同一个人还在跟进时又开帖：「{older.title}」和「{t.title}」")
+    return found or ["（没有）"]
+
+
+def following(older: Thread, newer: Thread, shown: dict) -> bool:
+    last = max(shown[s][0].number for p in older.posts for s in p.sources)
+    first = min(shown[s][0].number for s in newer.posts[0].sources)
+    return 0 < first - last <= FOLLOW_FOR
+
+
+async def categories_md(fake: FakeForum, llm: OpenAICompatible) -> str:
+    categories: dict[str, list[str]] = defaultdict(list)
+    tags: Counter[str] = Counter()
+    for t in fake.threads.values():
+        answer, _, _ = await llm.complete(CATEGORIZE, f"标题：{t.title}\n{t.posts[0].body}")
+        try:
+            raw = judge.extract_json(answer)
+            categories[str(raw["category"])].append(t.title)
+            tags.update(str(tag) for tag in raw.get("tags") or [])
+        except (ValueError, KeyError, TypeError):
+            categories["（没分出来）"].append(t.title)
+    lines = ["# 类别", "", "| 类别 | 问题数 | 例子 |", "| --- | --- | --- |"]
+    for name, titles in sorted(categories.items(), key=lambda c: -len(c[1])):
+        lines.append(f"| {name} | {len(titles)} | {'；'.join(titles[:5])} |")
+    lines += ["", "# 标签", "", "| 标签 | 次数 |", "| --- | --- |"]
+    lines += [f"| {tag} | {n} |" for tag, n in tags.most_common()]
+    return "\n".join(lines) + "\n"
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Replay an exported group chat (docs/replay.md)")
+    parser.add_argument("export", help="QQChatExporter 导出的 JSON")
+    parser.add_argument("--out", required=True, help="结果放在哪个目录")
+    parser.add_argument("--boards", help="版块和标签的 JSON；不给就是自由分类")
+    parser.add_argument("--from", dest="start", help="从这天开始（YYYY-MM-DD）")
+    parser.add_argument("--until", help="到这天为止，含这天（YYYY-MM-DD）")
+    parser.add_argument("--threshold", type=float, help="OneJev 的门槛；0 时每轮都交给大模型")
+    parser.add_argument("--onejev", default="http://127.0.0.1:8000", help="OneJev 的地址")
+    parser.add_argument("--no-onejev", action="store_true", help="不问 OneJev，每轮都交给大模型")
+    asyncio.run(replay(parser.parse_args()))
+
+
+if __name__ == "__main__":
+    main()

@@ -74,28 +74,28 @@
 
 ## 3. 回放工具
 
-`tools/replay.py` 跑的是插件里同一份收录代码（`mousehole/archive.py`、`mousehole/judge.py`），只换掉外面：
+`tools/replay.py` 跑的是插件里同一份收录代码（`mousehole/archive.py`、`mousehole/judge.py`、`mousehole/similar.py`），只换掉外面：
 
 | 插件里 | 回放时 |
 | --- | --- |
 | 收到的群消息 | 导出文件里的消息，转成 OneBot 消息段，按顺序喂进去 |
 | 时间 | 消息的时间：一轮"等 10 分钟"按消息时间算，不真等 |
-| 论坛 | 内存里的假论坛（`tools/fake_forum.py`，单元测试也用它）：记下发帖、回复和更新，答 `GET /bot/messages`；`GET /search/similar` 按标题和正文的字的二元组重合度找最像的 5 个；版块和标签从 `--boards` 读 |
-| OneJev | 真的，`--onejev` 指定地址 |
+| 论坛 | 内存里的假论坛（`tools/fake_forum.py`，单元测试也用它）：记下发帖、回复和更新，答 `GET /bot/messages`；`GET /search/similar` 按标题和正文的字的二元组重合度找最像的 5 个；版块和标签从 `--boards` 读；图片不真的下载 |
+| OneJev | 真的，`--onejev` 指定地址，默认 `http://127.0.0.1:8000` |
 | 大模型 | 插件里调 AstrBot 的 provider，回放时调 OpenAI 兼容的 `/chat/completions`，地址、密钥和模型从环境变量 `LLM_BASE_URL`、`LLM_API_KEY`、`LLM_MODEL` 读。用和线上 `llm_provider` 同一个模型 |
-| 嵌入模型 | 回放时调 OpenAI 兼容的 `/embeddings`，环境变量 `EMB_BASE_URL`、`EMB_API_KEY`、`EMB_MODEL`；用和线上 `embedding_provider` 同一个模型。向量索引只放在内存里 |
+| 嵌入模型 | 回放时调 OpenAI 兼容的 `/embeddings`，环境变量 `EMB_BASE_URL`、`EMB_API_KEY`（Ollama 不用填）、`EMB_MODEL`；用和线上 `embedding_provider` 同一个模型，比如 Ollama 的 `http://127.0.0.1:11434/v1` 和 `bge-m3`。向量索引只放在内存里 |
 
 收录代码只依赖三样东西：论坛的 httpx 客户端（回放时传接到假论坛的 `MockTransport`），一个"给系统提示词和提示词、返回文字和 token 用量"的函数，一个"给一批文字、返回向量"的函数。
 
 ```bash
-uv run python tools/replay.py data/export.json --boards data/boards.json --out replay-out/day1-a --until 2026-10-11
+uv run python -m tools.replay data/export.json --boards data/boards.json --out replay-out/day1-a --until 2026-10-11
 ```
 
 | 参数 | 作用 |
 | --- | --- |
-| `--boards FILE` | 版块和标签，格式同论坛 `GET /boards`、`GET /tags` 的返回；不给就是自由分类（第 6 节） |
+| `--boards FILE` | 版块和标签：`{"boards": [{"slug", "name", "description"}], "tags": [{"name", "kind"}]}`，字段同论坛 `GET /boards`、`GET /tags` 的返回；不给就是自由分类（第 6 节） |
 | `--out DIR` | 结果放在哪 |
-| `--from`、`--until` | 只跑这段时间的消息 |
+| `--from`、`--until` | 只跑这段时间的消息，`YYYY-MM-DD`，都含当天 |
 | `--threshold X` | OneJev 的门槛，不给用代码里的常量；给 0 就每一轮都交给大模型，同时记下 OneJev 的分数（第 5.1 节） |
 | `--no-onejev` | 不问 OneJev，每一轮都交给大模型；OneJev 不在线时调提示词用 |
 
@@ -158,7 +158,7 @@ OneJev 一次 10 秒左右，3 天的记录约 170 轮，跑一遍要半小时�
 
 ## 6. 版块和标签
 
-1. 不给 `--boards` 跑一遍：大模型不选版块，给每个问题写一个不超过 6 个字的类别，标签也随手写，最多 5 个。
+1. 不给 `--boards` 跑一遍：所有问题先放进一个"未分类"版块，跑完再让大模型给每个帖子写一个不超过 6 个字的类别和最多 5 个标签，结果在 `categories.md`。
 2. 看 `categories.md`，把意思相同的类别合并，提出 6 到 10 个版块，盖住九成以上的问题。每个版块写名字、地址（英文小写，比如 `qa`）和一句说明。论坛已有的初始版块见鼠洞总体设计 §8.1，合适的直接用。
 3. 提出 20 到 40 个标签，分话题、院校、方向三类（论坛的 `kind` 是 `topic`、`school`、`major`），只要出现得多的。
 4. 写成 `data/boards.json`，用它重跑一遍，看版块和标签选得对不对。

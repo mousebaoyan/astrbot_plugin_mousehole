@@ -1,0 +1,46 @@
+{
+  "forum_url": {
+    "description": "论坛地址",
+    "type": "string",
+    "default": "https://bbs.mousebaoyan.cn"
+  },
+  "token": {
+    "description": "论坛的 bot token",
+    "type": "string",
+    "default": "",
+    "secret": true,
+    "obvious_hint": true,
+    "hint": "管理员在论坛后台的 bot 页创建，范围选 read、act、sync、auth、events。"
+  },
+  "platform_id": {
+    "description": "用哪个 aiocqhttp 接入",
+    "type": "string",
+    "default": "",
+    "hint": "接了多个 aiocqhttp 时填它的 ID，只有一个时留空。"
+  },
+  "lottery_groups": {
+    "description": "开奖结果发到哪些群",
+    "type": "list",
+    "default": [],
+    "hint": "填群号；空的发到主群。"
+  },
+  "onejev_url": {
+    "description": "OneJev 服务的地址",
+    "type": "string",
+    "default": "http://127.0.0.1:8000",
+    "hint": "自动收录用它初筛；空的不做自动收录。"
+  },
+  "llm_provider": {
+    "description": "自动收录用的大模型",
+    "type": "string",
+    "default": "",
+    "_special": "select_provider",
+    "hint": "空的用 AstrBot 的默认模型。"
+  },
+  "embedding_provider": {
+    "description": "查重用的嵌入模型 ID",
+    "type": "string",
+    "default": "",
+    "hint": "AstrBot 里配好的嵌入模型（bge-m3）的 ID；空的不做自动收录。"
+  }
+}

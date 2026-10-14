@@ -1,0 +1,11 @@
+name: astrbot_plugin_mousehole
+display_name: 鼠洞
+desc: 鼠洞论坛的插件：群成员同步到论坛、私聊登录、把群里的提问和回答整理到论坛、开奖结果发到群里。
+short_desc: 把 QQ 群和鼠洞论坛连起来。
+help: 在论坛后台创建 bot token 并关联群，再在这里填好论坛地址和 token。自动收录还要配 OneJev、大模型和嵌入模型。
+version: v0.1.0
+author: JunieXD
+repo: https://github.com/mousebaoyan/astrbot_plugin_mousehole
+support_platforms:
+  - aiocqhttp
+astrbot_version: ">=4.26.2,<5"
