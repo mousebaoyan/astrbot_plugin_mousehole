@@ -67,6 +67,8 @@ class FakeForum:
         self.links: dict[tuple[int, int], int] = {}
         self.keys: dict[str, httpx.Response] = {}
         self.proxy_disabled: set[int] = set()
+        # Whether the token may make tags.
+        self.moderate = True
         self.uploads = 0
         self.ids = 0
 
@@ -136,6 +138,8 @@ class FakeForum:
             case "GET", ["tags"]:
                 return ok({"items": [{"name": t, "kind": "topic"} for t in self.tags]})
             case "POST", ["tags"]:
+                if not self.moderate:
+                    return error(403, "scope_missing")
                 if body["name"] in self.tags:
                     return error(409, "tag_exists")
                 self.tags.append(body["name"])

@@ -804,6 +804,11 @@ class Archive:
                 self.tags_made += 1
                 report["done"].append(f"tag {name}")
             except ForumError as e:
+                if e.code == "scope_missing":
+                    # A token without moderate: the thread goes without the tag.
+                    tags.remove(name)
+                    report["dropped"].append(f"tag {name}: forum {e.code}")
+                    continue
                 if e.code != "tag_exists":
                     raise
             self.tags.append(name)

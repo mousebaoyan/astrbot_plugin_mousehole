@@ -376,3 +376,16 @@ async def test_new_tags_are_made_once_and_only_so_many_a_day(setup):
     assert len(s.forum.tags) == 2 + 10
     assert s.forum.threads[max(s.forum.threads)].tags == []
     assert report["dropped"] == ["tag 学校9: 10 made today already"]
+
+
+async def test_a_token_that_may_not_make_tags_posts_the_thread_without_the_new_one(setup):
+    item = {
+        **QUESTION,
+        "tags": ["预推免", "华东师大"],
+        "new_tags": [{"name": "华东师大", "kind": "school"}],
+    }
+    s = setup(Script({"new": [{**item, "messages": [1]}], "edit": []}))
+    s.forum.moderate = False
+    report = await s.batch(message(1, ASKER, "华东师大预推免"))
+    assert thread_of(s).tags == ["预推免"]
+    assert report["dropped"] == ["tag 华东师大: forum scope_missing"]
