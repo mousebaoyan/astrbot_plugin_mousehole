@@ -174,11 +174,19 @@ async def replay(args: argparse.Namespace) -> None:
     )
     await archive.refresh_taxonomy()
     reports: list[dict] = []
+    # Written as each round ends: a run stopped halfway keeps what it has paid for.
+    rounds_file = out / "rounds.jsonl"
+    rounds_file.write_text("", encoding="utf-8")
+
+    def enough() -> bool:
+        return args.rounds is not None and len(reports) >= args.rounds
 
     async def drain() -> None:
-        while not archive.queue.empty():
+        while not archive.queue.empty() and not enough():
             report = await archive.handle(archive.queue.get_nowait())
             reports.append(report)
+            with rounds_file.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(report, ensure_ascii=False) + "\n")
             print(
                 f"round {len(reports)}: #{report['numbers'][0]}–#{report['numbers'][1]}"
                 f" scores={report['scores']} done={len(report['done'])}"
@@ -187,18 +195,18 @@ async def replay(args: argparse.Namespace) -> None:
             )
 
     for m, _, _ in messages:
+        if enough():
+            break
         now = m.time
         archive.tick(now)
         await drain()
         archive.add(group, m, bot)
         await drain()
-    archive.tick(float("inf"))
-    await drain()
+    if not enough():
+        archive.tick(float("inf"))
+        await drain()
 
     shown = {m.id: (m, name, text) for m, name, text in messages}
-    with (out / "rounds.jsonl").open("w", encoding="utf-8") as f:
-        for r in reports:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
     (out / "threads.md").write_text(threads_md(fake, shown, reports), encoding="utf-8")
     kept = sum(chat.count for chat in archive.chats.values())
     summary = summary_md(fake, shown, kept, reports, tuning, args.threshold == 0)
@@ -330,9 +338,14 @@ def following(older: Thread, newer: Thread, shown: dict, follow: int) -> bool:
 async def categories_md(fake: FakeForum, llm: LLM) -> str:
     categories: dict[str, list[str]] = defaultdict(list)
     tags: Counter[str] = Counter()
+    used_in = used_out = 0
     for t in fake.threads.values():
         prompt = f"标题：{t.title}\n{t.posts[0].body}"
-        answer, _, _ = await llm.complete(CATEGORIZE, prompt, CATEGORIZE_SCHEMA)
+        answer, input_tokens, output_tokens = await llm.complete(
+            CATEGORIZE, prompt, CATEGORIZE_SCHEMA
+        )
+        used_in += input_tokens
+        used_out += output_tokens
         try:
             raw = judge.extract_json(answer)
             categories[str(raw["category"])].append(t.title)
@@ -344,6 +357,11 @@ async def categories_md(fake: FakeForum, llm: LLM) -> str:
         lines.append(f"| {name} | {len(titles)} | {'；'.join(titles[:5])} |")
     lines += ["", "# 标签", "", "| 标签 | 次数 |", "| --- | --- |"]
     lines += [f"| {tag} | {n} |" for tag, n in tags.most_common()]
+    # Not in summary.md, which is written before these calls.
+    lines += [
+        "",
+        f"分类调用大模型 {len(fake.threads)} 次，输入 {used_in} token，输出 {used_out} token。",
+    ]
     return "\n".join(lines) + "\n"
 
 
@@ -357,6 +375,7 @@ def main() -> None:
     parser.add_argument("--boards", help="版块和标签的 JSON；不给就是自由分类")
     parser.add_argument("--from", dest="start", help="从这天开始（YYYY-MM-DD）")
     parser.add_argument("--until", help="到这天为止，含这天（YYYY-MM-DD）")
+    parser.add_argument("--rounds", type=int, help="跑满这么多轮就停，先小范围试时用")
     parser.add_argument("--threshold", type=float, help="OneJev 的门槛；0 时每轮都交给大模型")
     parser.add_argument("--no-onejev", action="store_true", help="不问 OneJev，每轮都交给大模型")
     asyncio.run(replay(parser.parse_args()))
