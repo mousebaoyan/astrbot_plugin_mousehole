@@ -58,10 +58,12 @@ ORGANIZE = f"""你在帮一个保研交流 QQ 群整理论坛帖子。群里正�
 {{
   "new": [
     {{"ref": "N1", "type": "question", "messages": [1201, 1204], "title": "……", "body": "……",
-      "board": "版块的 slug", "tags": ["……"], "new_tags": [], "same_as": null}},
-    {{"ref": "N2", "type": "reply", "question": "N1", "messages": [1203], "body": "……", "reply_to": null}},
+      "board": "版块的 slug", "tags": ["……"], "new_tags": [], "same_as": null, "question": null, "reply_to": null}},
+    {{"ref": "N2", "type": "reply", "messages": [1203], "title": null, "body": "……",
+      "board": null, "tags": [], "new_tags": [], "same_as": null, "question": "N1", "reply_to": null}},
     {{"ref": "N3", "type": "discussion", "messages": [1205], "title": "……", "body": "……",
-      "board": "版块的 slug", "tags": ["某大学"], "new_tags": [{{"name": "某大学", "kind": "school"}}], "same_as": null}}
+      "board": "版块的 slug", "tags": ["某大学"], "new_tags": [{{"name": "某大学", "kind": "school"}}],
+      "same_as": null, "question": null, "reply_to": null}}
   ],
   "edit": [
     {{"post": "Q1", "messages": [1210], "title": null, "body": "……"}}
@@ -112,7 +114,21 @@ ORGANIZE_SCHEMA = {
                         "question": nullable("string"),
                         "reply_to": nullable("string"),
                     },
-                    "required": ["ref", "type", "messages", "body"],
+                    # All of them, those that don't apply null or empty: left optional, a reply
+                    # may come without the thread it is in.
+                    "required": [
+                        "ref",
+                        "type",
+                        "messages",
+                        "title",
+                        "body",
+                        "board",
+                        "tags",
+                        "new_tags",
+                        "same_as",
+                        "question",
+                        "reply_to",
+                    ],
                     "additionalProperties": False,
                 },
             },
@@ -126,7 +142,7 @@ ORGANIZE_SCHEMA = {
                         "title": nullable("string"),
                         "body": {"type": "string"},
                     },
-                    "required": ["post", "messages", "body"],
+                    "required": ["post", "messages", "title", "body"],
                     "additionalProperties": False,
                 },
             },
