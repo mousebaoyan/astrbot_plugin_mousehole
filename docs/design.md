@@ -27,6 +27,7 @@ QQ 的风控会识别"像机器人"的账号，插件尽量让 bot 的操作和�
 - 群消息和通知只被动接收。
 - 读 NapCat 只读它的缓存，不让它为插件额外去 QQ 服务器拉数据。
 - 不主动私聊别人，私聊只回复本人发来的消息（登录）。
+- 回复（私聊登录、群里的"登录请私聊我"）前随机等 1–2 秒，不在收到消息的同一瞬间回。
 - 主动发到群里的只有开奖结果。
 - 发出的消息尽量不带链接，必须带的只有登录链接和开奖结果。
 
@@ -108,7 +109,7 @@ NapCat ⇄ AstrBot（aiocqhttp）
 | --- | --- |
 | `main.py` | AstrBot 入口：注册监听，启动、停止后台任务 |
 | `mousehole/forum.py` | 论坛接口：请求头、gzip，错误转成 `ForumError(code, message)` |
-| `mousehole/qq.py` | 调用 NapCat；主动发的消息排队 |
+| `mousehole/qq.py` | 调用 NapCat；回复前的延迟，主动发的消息排队 |
 | `mousehole/sync.py` | 成员同步 |
 | `mousehole/login.py` | 私聊登录 |
 | `mousehole/archive.py` | 自动收录：消息和分轮、跟进、发帖和更新、撤回 |

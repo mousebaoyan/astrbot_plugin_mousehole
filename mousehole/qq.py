@@ -7,6 +7,8 @@ from typing import Any
 
 # Seconds between the messages the bot sends of its own accord.
 GAP = (3, 6)
+# Seconds before a reply: a person answers after a moment, not the instant a message arrives.
+REPLY_DELAY = (1, 2)
 # For the coordinator the maintainer's other QQ plugins share, when it is there.
 GUARD_CONFIG = {
     "recovery_min_seconds": 60,
@@ -40,6 +42,7 @@ class QQ:
 
     async def reply(self, event: dict[str, Any], text: str) -> None:
         """To the chat a message came from, the group or the private one."""
+        await asyncio.sleep(random.uniform(*REPLY_DELAY))
         await self.platform().bot.send(event, text)
 
     async def online(self) -> bool:
