@@ -206,7 +206,8 @@
       "timeout_seconds": {
         "description": "一次调用最多等几秒",
         "type": "int",
-        "default": 180
+        "default": 300,
+        "hint": "思考时白天的 ECNU 一次可能要两三分钟。超时的这一轮不再收录。"
       },
       "tokens_per_day": {
         "description": "每天最多用多少 token",
