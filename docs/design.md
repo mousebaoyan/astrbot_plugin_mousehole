@@ -1,6 +1,6 @@
 # 鼠洞插件 · 设计
 
-> 状态：都已经定了，可以照着实现。第 8 节（自动收录）的门槛、轮次大小、提示词和版块用历史记录调，见[回放实验](replay.md)。论坛要配合的改动列在第 11 节。论坛一侧见鼠洞仓库的[总体设计](https://github.com/mousebaoyan/mousehole/blob/main/docs/design.md)和[接口](https://github.com/mousebaoyan/mousehole/blob/main/docs/api.md)；本文只写插件自己的部分，接口细节以论坛的文档为准。
+> 状态：都已经定了，代码写好了第一版，单元测试齐全，还没在 AstrBot 上跑过。接下来先装到 AstrBot 上联调（自动收录先关着，第 12 节），再跑回放调自动收录，然后建收录用的版块（第 11 节）、打开自动收录。第 8 节（自动收录）的门槛、轮次大小、提示词和版块用历史记录调，见[回放实验](replay.md)。论坛要配合的改动列在第 11 节。论坛一侧见鼠洞仓库的[总体设计](https://github.com/mousebaoyan/mousehole/blob/main/docs/design.md)和[接口](https://github.com/mousebaoyan/mousehole/blob/main/docs/api.md)；本文只写插件自己的部分，接口细节以论坛的文档为准。
 
 ## 1. 目标
 
