@@ -53,6 +53,36 @@
       }
     }
   },
+  "badges": {
+    "description": "金徽章",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "有人得到金徽章时在 TA 在的群里祝贺",
+        "type": "bool",
+        "default": true,
+        "hint": "要开着成员同步，插件才知道谁在哪个群。"
+      }
+    }
+  },
+  "weekly": {
+    "description": "周榜",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "每周日 20 点在群里发周榜图片",
+        "type": "bool",
+        "default": true,
+        "hint": "要在 AstrBot 的 Python 环境里装好浏览器：python -m playwright install chromium"
+      },
+      "groups": {
+        "description": "发到哪些群",
+        "type": "list",
+        "default": [],
+        "hint": "填群号；空的发到论坛上关联的所有群。"
+      }
+    }
+  },
   "archive": {
     "description": "自动收录",
     "type": "object",

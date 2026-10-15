@@ -1,5 +1,6 @@
 """The forum's event stream (design §10), and what it sets off: QQ signatures for members who
-just activated, lottery results in the groups, and the thread index kept current."""
+just activated, lottery results and gold badges in the groups, and the thread index kept
+current."""
 
 import asyncio
 import json
@@ -21,10 +22,22 @@ INDEX_TYPES = ["thread.created", "post.updated", "post.deleted"]
 BATCH = 500
 # Seconds before each reconnection in a row; then every minute.
 RECONNECT = [1, 2, 5, 10, 30, 60]
-# A plugin back after a long stop doesn't announce stale draws.
-LOTTERY_FRESH = 12 * 3600
+# A plugin back after a long stop doesn't announce stale draws or badges.
+FRESH = 12 * 3600
 # @ in one message, beyond which winners are only named.
 MENTIONS = 20
+
+
+def badge_message(data: dict) -> list[dict]:
+    badge = data["badge"]
+    return [
+        {"type": "text", "data": {"text": "【鼠洞金徽章】恭喜 "}},
+        {"type": "at", "data": {"qq": str(data["user"]["qq"])}},
+        {
+            "type": "text",
+            "data": {"text": f" 得到「{badge['name']}」：{badge['description']}\n{data['url']}"},
+        },
+    ]
 
 
 def lottery_message(data: dict) -> list[dict]:
@@ -56,11 +69,13 @@ class Events:
         state: Path,
         *,
         lottery: list[int] | None,
+        badges: bool,
         bio: bool,
         index: Index | None,
     ):
         """`lottery`: the groups draws are announced in, empty for the primary group, None for
-        none; `bio`: whether newly activated members get their QQ signatures pushed."""
+        none; `badges`: whether gold badges are congratulated on, in the groups the member is
+        in; `bio`: whether newly activated members get their QQ signatures pushed."""
         self.forum = forum
         self.qq = qq
         self.sync = sync
@@ -69,6 +84,7 @@ class Events:
         self.index = index
         types = ["member.activated"] if bio else []
         types += ["lottery.drawn"] if lottery is not None else []
+        types += ["badge.granted"] if badges else []
         self.types = ",".join(types + (INDEX_TYPES if index else []))
 
     def load(self) -> int | None:
@@ -133,11 +149,18 @@ class Events:
                     body = {"bio": info["long_nick"]}
                     await self.forum.call("PUT", f"/bot/users/qq:{qq}/bio", body=body)
             case "lottery.drawn":
-                if time.time() - at > LOTTERY_FRESH:
+                if time.time() - at > FRESH:
                     return
                 message = lottery_message(data)
                 for group in self.lottery or self.sync.groups[:1]:
                     await self.qq.send_group(group, message)
+            case "badge.granted" if data["badge"]["tier"] == "gold":
+                if time.time() - at > FRESH:
+                    return
+                qq = data["user"]["qq"]
+                for group in self.sync.groups:
+                    if qq in self.sync.roster.get(group, ()):
+                        await self.qq.send_group(group, badge_message(data))
             case "thread.created" if self.index:
                 await self.index.thread_created(data["thread"]["id"])
             case "post.updated" if self.index and data["post"]["floor"] == 1:

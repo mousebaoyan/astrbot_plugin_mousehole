@@ -15,6 +15,7 @@ from .mousehole.login import login, wants_login
 from .mousehole.qq import QQ
 from .mousehole.similar import Index
 from .mousehole.sync import Sync
+from .mousehole.weekly import Weekly
 
 NAME = "astrbot_plugin_mousehole"
 START_RETRY = 60
@@ -74,8 +75,21 @@ class Mousehole(Star):
             self.sync,
             data / "state.json",
             lottery=[int(g) for g in lottery["groups"]] if lottery["enabled"] else None,
+            badges=c["badges"]["enabled"],
             bio=c["push_bio"],
             index=index,
+        )
+        self.weekly = (
+            Weekly(
+                self.forum,
+                self.qq,
+                self.sync,
+                data / "weekly.json",
+                groups=[int(g) for g in c["weekly"]["groups"]],
+                site=c["forum_url"],
+            )
+            if c["weekly"]["enabled"]
+            else None
         )
         self.tasks = [asyncio.create_task(self.start())]
         # When AstrBot starts, plugins load before the platforms; installed or reloaded later,
@@ -98,6 +112,8 @@ class Mousehole(Star):
             self.tasks.append(asyncio.create_task(self.events.run()))
         if self.archive:
             self.tasks.append(asyncio.create_task(self.archive.run()))
+        if self.weekly:
+            self.tasks.append(asyncio.create_task(self.weekly.run()))
 
     @filter.on_platform_loaded()
     async def on_platform_loaded(self):

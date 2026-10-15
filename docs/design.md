@@ -1,6 +1,6 @@
 # 鼠洞插件 · 设计
 
-> 状态：成员同步、登录、个性签名和开奖已经在 AstrBot 上联调通过。自动收录（每天收两批、早上发汇总，第 8 节）用回放调好后，2026-10-16 在两个主群打开，正在观察上线后的效果。第 8 节（自动收录）的分段大小、提示词和版块用历史记录调，见[回放实验](replay.md)。论坛要配合的改动列在第 11 节。论坛一侧见鼠洞仓库的[总体设计](https://github.com/mousebaoyan/mousehole/blob/main/docs/design.md)和[接口](https://github.com/mousebaoyan/mousehole/blob/main/docs/api.md)；本文只写插件自己的部分，接口细节以论坛的文档为准。
+> 状态：成员同步、登录、个性签名和开奖已经在 AstrBot 上联调通过。自动收录（每天收两批、早上发汇总，第 8 节）用回放调好后，2026-10-16 在两个主群打开，正在观察上线后的效果。周榜图片和金徽章的祝贺（第 9 节）已写好，要先在 AstrBot 的 Python 环境里装好 Chromium（第 3 节）。第 8 节（自动收录）的分段大小、提示词和版块用历史记录调，见[回放实验](replay.md)。论坛要配合的改动列在第 11 节。论坛一侧见鼠洞仓库的[总体设计](https://github.com/mousebaoyan/mousehole/blob/main/docs/design.md)和[接口](https://github.com/mousebaoyan/mousehole/blob/main/docs/api.md)；本文只写插件自己的部分，接口细节以论坛的文档为准。
 
 ## 1. 目标
 
@@ -121,7 +121,7 @@ NapCat ⇄ AstrBot（aiocqhttp）
 | `mousehole/judge.py` | 自动收录给大模型的提示词，和它输出的检查 |
 | `mousehole/similar.py` | 查重：帖子的向量索引，找和新提问最像的帖子 |
 | `mousehole/events.py` | 事件流，以及它触发的开奖结果、金徽章的祝贺、个性签名和向量索引的更新 |
-| `mousehole/weekly.py`、`mousehole/poster/` | 周榜：取论坛的统计，用 HTML 模板和 Chromium 排版成图片，发到群里 |
+| `mousehole/weekly.py` | 周榜：取论坛的统计和头像，排成 HTML，用 Chromium 截成图片，发到群里；`mousehole/poster/` 是它用的字体（SIL OFL） |
 | `tools/fake_forum.py` | 内存里的假论坛，单元测试和回放用 |
 | `tools/boards.py` | 按 `data/boards.json` 在论坛上建版块和标签（第 8.9 节） |
 | `tools/replay.py` | 用导出的历史群消息离线跑自动收录（[回放实验](replay.md)） |
@@ -450,9 +450,9 @@ https://bbs.mousebaoyan.cn/badges/14
 
 **周榜**：每周日 20 点（`WEEKLY_WEEKDAY`、`WEEKLY_HOUR`）取 `GET /bot/stats/weekly`，排成一张图片，发到 `weekly.groups`，空的发到论坛上关联的所有群。论坛的统计和榜单见论坛总体设计 §8.15。
 
-- 图片的做法照群聊摘要插件的"鼠群日报"：HTML 模板加 CSS，在本机用 Chromium 截成宽 1080px 的长图，不用远程渲染服务；字体是插件自带的霞鹜文楷屏幕阅读版，配色和论坛一样。头像从论坛取（`avatar_url`）。
+- 图片的做法照群聊摘要插件的"鼠群日报"：HTML 加 CSS，在本机用 Chromium 截成宽 1080px 的长图，不用远程渲染服务；字体是插件自带的霞鹜文楷屏幕阅读版，配色和论坛一样。头像由插件先从论坛取回（`avatar_url`），连同字体嵌进页面，截图时不联网。
 - 图片上依次是：本周概况（新帖、新回复、收录、发过内容的人、第一次登录的人、发出的徽章），获赞最多、回复最多、读的人最多的帖子，获赞最多、被采纳最多、回复最多的人，本周的金徽章。空的榜单不画。
-- 图片发完再发一条消息，@ 上了人的榜、又在这个群里的人，最多 @ 20 个：
+- 图片发完再发一条消息，@ 上了人的榜、又在这个群里的人，最多 @ 20 个，其余的只写名字。谁在哪个群靠成员同步时读到的名单，关掉成员同步就不 @ 人，金徽章也不发：
 
   ```text
   鼠洞本周周榜 🐭
@@ -485,7 +485,6 @@ https://bbs.mousebaoyan.cn/badges/14
 提醒改发邮件、多个发信邮箱、版块默认公开，以及收录要用的接口（一层整理自几条消息、`PATCH /posts` 收消息段和完整的来源、"整理自群聊"的标注、去掉转存回执），论坛都已经改好（论坛总体设计 §6.3、§8.1、§8.6，接口 §2.5、§6.4）。还剩：
 
 - 收录用的版块和标签，等回放跑出类别后再建（[回放实验](replay.md)第 6 节）。
-- 周榜的统计接口 `GET /bot/stats/weekly` 和 `badge.granted` 事件（论坛总体设计 §8.8、§8.15，接口 §3.10、§5），论坛做完徽章和统计后插件再接。
 
 ## 12. 测试
 

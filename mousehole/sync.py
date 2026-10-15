@@ -46,6 +46,8 @@ class Sync:
         self.groups: list[int] = []
         # When each member last spoke, as seen here: NapCat's cache only learns it on a refetch.
         self.spoke: dict[tuple[int, int], int] = {}
+        # Who is in each group, for whom a message may @; known only while members are synced.
+        self.roster: dict[int, set[int]] = {}
 
     async def refresh_groups(self) -> None:
         items = (await self.forum.call("GET", "/bot/groups"))["items"]
@@ -57,6 +59,7 @@ class Sync:
     async def full(self, group: int) -> None:
         observed = int(time.time())
         members = await self.qq.call("get_group_member_list", group_id=group)
+        self.roster[group] = {m["user_id"] for m in members}
         for m in members:
             spoke = self.spoke.get((group, m["user_id"]), 0)
             m["last_sent_time"] = max(m.get("last_sent_time", 0), spoke)
@@ -88,6 +91,9 @@ class Sync:
         record = delta(notice) if self.members and group in self.groups else None
         if record is None:
             return
+        if "in_group" in record:
+            roster = self.roster.setdefault(group, set())
+            (roster.add if record["in_group"] else roster.discard)(record["user_id"])
         if notice["notice_type"] == "group_increase":
             # NapCat refetches the list before it tells of a newcomer, so they come with a name.
             members = await self.qq.call("get_group_member_list", group_id=group)
