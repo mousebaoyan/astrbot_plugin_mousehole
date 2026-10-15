@@ -9,7 +9,7 @@ import json
 import re
 import sys
 from collections import Counter, defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -130,11 +130,17 @@ def moment(value: str) -> float:
     return datetime.fromisoformat(value).timestamp()
 
 
+def until(value: str) -> float:
+    """`YYYY-MM-DD` up to the end of that day, or `YYYY-MM-DD HH:MM` up to then."""
+    end = datetime.fromisoformat(value)
+    return (end + timedelta(days=1) if len(value) == len("YYYY-MM-DD") else end).timestamp()
+
+
 async def replay(args: argparse.Namespace) -> None:
     export = json.loads(Path(args.export).read_text(encoding="utf-8"))
     group, bot, messages = convert(export)
     start = moment(args.start) if args.start else float("-inf")
-    end = moment(args.until) + 86400 if args.until else float("inf")
+    end = until(args.until) if args.until else float("inf")
     messages = [m for m in messages if start <= m[0].time < end]
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -442,7 +448,9 @@ def main() -> None:
     parser.add_argument(
         "--from", dest="start", help="从这天开始（YYYY-MM-DD），或者从这一刻（YYYY-MM-DD HH:MM）"
     )
-    parser.add_argument("--until", help="到这天为止，含这天（YYYY-MM-DD）")
+    parser.add_argument(
+        "--until", help="到这天为止，含这天（YYYY-MM-DD），或者到这一刻（YYYY-MM-DD HH:MM）"
+    )
     parser.add_argument("--rounds", type=int, help="跑满这么多轮就停，先小范围试时用")
     parser.add_argument("--threshold", type=float, help="OneJev 的门槛；0 时每轮都交给大模型")
     parser.add_argument("--no-onejev", action="store_true", help="不问 OneJev，每轮都交给大模型")
