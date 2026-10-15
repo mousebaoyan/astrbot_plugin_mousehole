@@ -4,25 +4,42 @@ import httpx
 import pytest
 
 from mousehole.judge import DUPLICATE_SCHEMA
-from mousehole.llm import BUSY_WAIT, LLM, BudgetExhausted, Settings
+from mousehole.llm import (
+    BUSY_WAIT,
+    LLM,
+    RETRY_WAITS,
+    BudgetExhausted,
+    LLMError,
+    Settings,
+    Unavailable,
+)
 
 ECNU = Settings("https://chat.ecnu.edu.cn/open/api/v1", "key", "ecnu-plus")
 
 
-def answering(*statuses):
-    """A fake API answering with these statuses in turn, then 200; keeps what it was sent."""
-    sent, left = [], list(statuses)
+def answering(*troubles):
+    """A fake API answering with these in turn, then with a whole answer; keeps what it was
+    sent. A trouble is a status, "dropped" for a connection lost, "broken" for a stream that
+    stops before the answer, "length" for an answer that reached max_tokens."""
+    sent, left = [], list(troubles)
 
     def handle(request: httpx.Request) -> httpx.Response:
         sent.append(json.loads(request.content))
-        if left:
-            return httpx.Response(left.pop(0), text="busy")
+        trouble = left.pop(0) if left else None
+        if isinstance(trouble, int):
+            return httpx.Response(trouble, text="busy")
+        if trouble == "dropped":
+            raise httpx.RemoteProtocolError("peer closed connection")
         chunks = [
             {"choices": [{"delta": {"reasoning_content": "想想"}}]},
             {"choices": [{"delta": {"content": '{"same"'}}]},
-            {"choices": [{"delta": {"content": ": null}"}}]},
-            {"choices": [], "usage": {"prompt_tokens": 600, "completion_tokens": 400}},
         ]
+        if trouble != "broken":
+            finish = "length" if trouble == "length" else "stop"
+            chunks.append({"choices": [{"delta": {"content": ": null}"}, "finish_reason": finish}]})
+            chunks.append(
+                {"choices": [], "usage": {"prompt_tokens": 600, "completion_tokens": 400}}
+            )
         lines = [f"data: {json.dumps(c)}\n\n" for c in chunks] + ["data: [DONE]\n\n"]
         return httpx.Response(200, text="".join(lines))
 
@@ -76,6 +93,39 @@ async def test_too_many_requests_at_once_wait_their_turn():
 
     await LLM(ECNU, transport, sleep).complete("系统", "提示")
     assert (len(sent), slept) == (3, [BUSY_WAIT, BUSY_WAIT])
+
+
+async def test_lost_connections_broken_answers_and_server_errors_are_asked_again():
+    transport, sent = answering("dropped", "broken", 502)
+    slept = []
+
+    async def sleep(seconds):
+        slept.append(seconds)
+
+    assert await LLM(ECNU, transport, sleep).complete("系统", "提示") == (
+        '{"same": null}',
+        600,
+        400,
+    )
+    assert (len(sent), slept) == (4, list(RETRY_WAITS))
+
+
+async def test_asking_again_gives_up_in_the_end_and_bad_answers_are_not_asked_again():
+    # Unavailable stops the batch to try again later; LLMError loses the segment.
+    async def sleep(seconds):
+        pass
+
+    transport, sent = answering(*["dropped"] * (len(RETRY_WAITS) + 1))
+    with pytest.raises(Unavailable):
+        await LLM(ECNU, transport, sleep).complete("系统", "提示")
+    transport, sent = answering(401)
+    with pytest.raises(Unavailable):
+        await LLM(ECNU, transport, sleep).complete("系统", "提示")
+    for trouble in ("length", 422):
+        transport, sent = answering(trouble)
+        with pytest.raises(LLMError):
+            await LLM(ECNU, transport, sleep).complete("系统", "提示")
+        assert len(sent) == 1
 
 
 async def test_the_daily_limit_stops_calls_once_reached():

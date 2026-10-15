@@ -20,6 +20,7 @@ import httpx
 
 from . import judge
 from .forum import Forum, ForumError
+from .llm import Unavailable
 from .similar import Index
 
 log = logging.getLogger("astrbot.mousehole")
@@ -59,6 +60,9 @@ BATCH_HOURS = (4, 18)
 SUMMARY_HOUR = 8
 # Threads a summary names, so that it @s few and doesn't flood the group.
 SUMMARY_ITEMS = 10
+# Seconds before a batch the LLM, the embedding model or the forum couldn't be had for, or a
+# summary that couldn't be sent, is tried again.
+PAUSE = 600
 NEW_TAGS_PER_DAY = 10
 
 PLACEHOLDERS = {
@@ -83,6 +87,15 @@ def shows(segment: dict) -> bool:
 
 def plain(segments: list[dict]) -> str:
     return "".join(s["data"]["text"] for s in segments if s["type"] == "text")
+
+
+def unavailable(e: Exception) -> bool:
+    """Whether something failed for want of a service rather than for what it held: the segment
+    is tried again later, not lost (design §8.2)."""
+    # 401 is the bot token turned away, for every call alike.
+    return isinstance(e, Unavailable | httpx.TransportError) or (
+        isinstance(e, ForumError) and (e.status == 401 or e.status >= 500)
+    )
 
 
 def until(hours: tuple[int, ...], now: float) -> float:
@@ -150,7 +163,12 @@ def load(path: Path) -> list[Message]:
     """A batch's messages, without those taken back."""
     messages: dict[int, Message] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
-        record = json.loads(line)
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            # Cut short by the machine going down as it was written.
+            log.warning("A line in %s is not whole and is left out", path.name)
+            continue
         if "recall" in record:
             messages.pop(record["recall"], None)
         else:
@@ -261,6 +279,7 @@ class Archive:
             saved = json.loads(self.summary_file.read_text(encoding="utf-8"))
             self.summary = {int(group): entries for group, entries in saved.items()}
         self.chats: dict[int, Chat] = {}
+        self.indexed = False
         self.boards: list[dict] = []
         self.tags: list[str] = []
         # The day new tags are counted for, and how many were made on it.
@@ -317,7 +336,7 @@ class Archive:
         # A batch a restart broke off is gone on with first.
         while True:
             try:
-                await self.refresh_taxonomy()
+                await self.ready()
                 async for report in self.batch():
                     # What the LLM wrote stays out of the logs: it is the members' words.
                     tokens = sum(c["input_tokens"] + c["output_tokens"] for c in report["llm"])
@@ -329,15 +348,37 @@ class Archive:
                         report["done"],
                         report["dropped"],
                     )
-            except Exception:
+            except Exception as e:
+                if unavailable(e):
+                    log.warning("Archiving waits %d minutes: %r", PAUSE // 60, e)
+                    await asyncio.sleep(PAUSE)
+                    continue
                 log.exception("Archiving failed")
-            await asyncio.sleep(until(BATCH_HOURS, self.clock()))
+            await self.wait_until(BATCH_HOURS)
             self.start_batch()
 
     async def send_summaries(self) -> None:
         while True:
-            await asyncio.sleep(until((SUMMARY_HOUR,), self.clock()))
-            await self.send_summary()
+            await self.wait_until((SUMMARY_HOUR,))
+            while not await self.send_summary():
+                await asyncio.sleep(PAUSE)
+
+    async def wait_until(self, hours: tuple[int, ...]) -> None:
+        """Till the next of these hours o'clock by the wall clock, which goes on while the
+        machine sleeps."""
+        end = self.clock() + until(hours, self.clock())
+        while (left := end - self.clock()) > 0:
+            await asyncio.sleep(min(left, 60))
+
+    async def ready(self) -> None:
+        """The forum and the embedding model there before the LLM is paid for a segment they
+        would fail, with the boards and tags of the day and the thread index."""
+        await self.refresh_taxonomy()
+        if not self.indexed:
+            await self.index.load()
+            self.indexed = True
+        else:
+            await self.index.embed(["鼠洞"])
 
     async def refresh_taxonomy(self) -> None:
         boards = (await self.forum.call("GET", "/boards"))["items"]
@@ -362,8 +403,12 @@ class Archive:
             if not messages:
                 path.unlink()
                 continue
+            # The ones kept already, when a batch is tried again, go on with what they were
+            # archived into.
+            messages = [chat.by_id.get(m.id) or m for m in messages]
             for m in messages:
-                chat.keep(m)
+                if m.number == 0:
+                    chat.keep(m)
             done = 0
             for segment in segments(messages, self.tuning.segment_messages):
                 report = {
@@ -381,6 +426,10 @@ class Archive:
                 try:
                     await self.work(chat, segment, report)
                 except Exception as e:
+                    if unavailable(e):
+                        # The segment stays in the file, to be tried again.
+                        self.remember(group, report["summary"])
+                        raise
                     # The segment is lost, and the next goes on (design §8.2).
                     log.exception("Archiving a segment of group %s failed", group)
                     report["dropped"].append(f"failed: {e!r}")
@@ -502,9 +551,14 @@ class Archive:
 
     def remember(self, group: int, entries: list[dict]) -> None:
         """What a segment brought, for the next summary in the group, kept through restarts."""
-        if not entries or self.notify is None:
+        if self.notify is None:
             return
-        self.summary.setdefault(group, []).extend(entries)
+        named = self.summary.setdefault(group, [])
+        # A segment tried again names again what it posted the first time.
+        named += [e for e in entries if e not in named]
+        if not named:
+            del self.summary[group]
+            return
         self.save_summary()
 
     def save_summary(self) -> None:
@@ -512,8 +566,10 @@ class Archive:
         part.write_text(json.dumps(self.summary, ensure_ascii=False), encoding="utf-8")
         part.replace(self.summary_file)
 
-    async def send_summary(self) -> None:
-        """One message in each group that had threads archived since the last (design §8.8)."""
+    async def send_summary(self) -> bool:
+        """One message in each group that had threads archived since the last (design §8.8).
+        Whether all went."""
+        sent = True
         for group in list(self.summary):
             entries = self.summary[group]
             # Segments archived while it goes are for the next summary.
@@ -522,11 +578,13 @@ class Archive:
                 await self.notify(group, summary_message(entries, self.site))
             except Exception:
                 log.exception("Sending the archive summary to group %s failed", group)
+                sent = False
                 continue
             del entries[:count]
             if not entries:
                 del self.summary[group]
             self.save_summary()
+        return sent
 
     async def follow_quotes(self, chat: Chat, messages: list[Message]) -> set[Question]:
         """Questions the segment quotes archived messages of, followed again if they had lapsed."""
@@ -588,6 +646,8 @@ class Archive:
             try:
                 result = await work
             except ForumError as e:
+                if unavailable(e):
+                    raise
                 log.warning("Archiving %s in group %s failed: %s", what, chat.group, e)
                 report["dropped"].append(f"{what}: forum {e.code}")
                 return None

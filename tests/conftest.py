@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from mousehole import forum
 from mousehole.archive import Archive, Message
 from mousehole.similar import Index
 from tools.fake_forum import FakeForum
@@ -16,13 +17,18 @@ class Script:
 
     def __init__(self, *answers: object):
         self.answers = [
-            a if isinstance(a, str) else json.dumps(a, ensure_ascii=False) for a in answers
+            a if isinstance(a, str | Exception) else json.dumps(a, ensure_ascii=False)
+            for a in answers
         ]
         self.prompts: list[tuple[str, str]] = []
 
     async def __call__(self, system: str, prompt: str, schema: dict) -> tuple[str, int, int]:
+        """An exception lined up is raised."""
         self.prompts.append((system, prompt))
-        return self.answers.pop(0), 1000, 100
+        answer = self.answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer, 1000, 100
 
 
 async def embed(texts: list[str]) -> list[list[float]]:
@@ -70,6 +76,12 @@ class Setup:
         self.archive.start_batch()
         self.now += 1
         return [report async for report in self.archive.batch()][-1]
+
+
+@pytest.fixture(autouse=True)
+def forum_asks_once(monkeypatch):
+    """Asking the forum again is tested on its own."""
+    monkeypatch.setattr(forum, "RETRY_WAITS", ())
 
 
 @pytest.fixture

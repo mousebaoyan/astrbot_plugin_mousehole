@@ -1,9 +1,11 @@
 from contextlib import aclosing
 from datetime import datetime
 
+import pytest
 from conftest import BOT, GROUP, Script, message
 
 from mousehole.archive import BATCH_HOURS, Message, Tuning, load, segments, until
+from mousehole.llm import Unavailable
 
 TUNING = Tuning()
 
@@ -226,6 +228,22 @@ async def test_a_quote_of_a_message_no_longer_kept_fetches_its_thread_to_go_by(s
     prompt = s.llm.prompts[0][1]
     assert "Q1 标题：很早以前的问题" in prompt and "Q1（论坛上）：早先的正文" in prompt
     assert report["dropped"] == ["edit Q1: not a floor that can be edited"]
+
+
+async def test_a_segment_a_service_failed_waits_in_its_batch_to_be_tried_again(setup):
+    question = {"new": [{**QUESTION, "messages": [1]}], "edit": []}
+    nothing = {"new": [], "edit": []}
+    s = setup(Script(question, Unavailable("down"), nothing), tuning=Tuning(segment_messages=1))
+    await s.archive.refresh_taxonomy()
+    await s.archive.add(GROUP, message(1, ASKER, "预推免两批能都报吗"), BOT)
+    await s.archive.add(GROUP, message(1000, OTHER, "哈哈"), BOT)
+    s.archive.start_batch()
+    with pytest.raises(Unavailable):
+        async for _ in s.archive.batch():
+            pass
+    [report] = [r async for r in s.archive.batch()]
+    assert report["numbers"] == [2, 2] and "哈哈" in s.llm.prompts[-1][1]
+    assert (len(s.forum.threads), len(s.archive.summary[GROUP])) == (1, 1)
 
 
 async def test_a_message_recalled_while_its_batch_is_worked_on_is_left_out(setup):

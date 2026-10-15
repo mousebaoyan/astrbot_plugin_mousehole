@@ -19,14 +19,21 @@ log = logging.getLogger("astrbot.mousehole")
 # thinking may take 5.
 BUSY_WAIT = 15
 BUSY_TRIES = 40
+# A dropped connection, an answer broken off or a server error: asked again after these many
+# seconds. A call cut off midway is barely charged.
+RETRY_WAITS = (30, 120, 300)
 
 
 class LLMError(Exception):
-    pass
+    """An answer asking again won't put right: the segment is lost."""
 
 
-class BudgetExhausted(Exception):
-    """Today's tokens are used up: rounds are let go until tomorrow."""
+class Unavailable(Exception):
+    """No answer to be had for now: the batch waits and tries again (design §8.2)."""
+
+
+class BudgetExhausted(Unavailable):
+    """Today's tokens are used up."""
 
 
 @dataclass
@@ -112,32 +119,59 @@ class LLM:
         if limit and self.spent >= limit:
             raise BudgetExhausted(f"{self.spent} tokens today")
         body = self.body(system, prompt, schema)
-        for _ in range(BUSY_TRIES):
-            async with self.http.stream("POST", "/chat/completions", json=body) as res:
-                if res.status_code == 200:
-                    answer, usage = await read(res)
+        busy = failures = 0
+        while True:
+            try:
+                async with self.http.stream("POST", "/chat/completions", json=body) as res:
+                    text = ""
+                    if res.status_code == 200:
+                        answer, usage, finish = await read(res)
+                    else:
+                        text = (await res.aread()).decode(errors="replace")
+            except httpx.TransportError as e:
+                problem = repr(e)
+            else:
+                if res.status_code == 200 and finish is not None:
                     break
-                text = (await res.aread()).decode(errors="replace")
-            if res.status_code != 429:
-                raise LLMError(f"HTTP {res.status_code}: {text[:200]}")
-            await self.sleep(BUSY_WAIT)
-        else:
-            raise LLMError(f"HTTP 429 for {BUSY_WAIT * BUSY_TRIES} seconds")
+                if res.status_code == 429:
+                    busy += 1
+                    if busy == BUSY_TRIES:
+                        raise Unavailable(f"HTTP 429 for {BUSY_WAIT * BUSY_TRIES} seconds")
+                    await self.sleep(BUSY_WAIT)
+                    continue
+                if res.status_code in (401, 403):
+                    # The key or the IP turned away: nothing to do with the segment.
+                    raise Unavailable(f"HTTP {res.status_code}: {text[:200]}")
+                if 400 <= res.status_code < 500:
+                    raise LLMError(f"HTTP {res.status_code}: {text[:200]}")
+                problem = f"HTTP {res.status_code} {text[:200]}" if text else "answer broken off"
+            if failures == len(RETRY_WAITS):
+                raise Unavailable(problem)
+            wait = RETRY_WAITS[failures]
+            log.warning("The LLM failed (%s); asking again in %d seconds", problem, wait)
+            await self.sleep(wait)
+            failures += 1
         tokens = usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
         self.spent += sum(tokens)
+        if finish == "length":
+            # Thought all it may and stopped before the JSON was whole; another try would too.
+            raise LLMError(f"the answer reached max_tokens ({self.settings.max_tokens})")
         return answer, *tokens
 
 
-async def read(res: httpx.Response) -> tuple[str, dict]:
-    """A streamed answer and its usage, which comes with the last chunk."""
-    parts, usage = [], {}
+async def read(res: httpx.Response) -> tuple[str, dict, str | None]:
+    """A streamed answer, its usage, which comes with the last chunk, and why it finished: None
+    when the stream stopped before the answer did."""
+    parts, usage, finish = [], {}, None
     async for line in res.aiter_lines():
         if not line.startswith("data: ") or line == "data: [DONE]":
             continue
         chunk = json.loads(line.removeprefix("data: "))
         usage = chunk.get("usage") or usage
-        parts += [c["delta"].get("content") or "" for c in chunk["choices"]]
-    return "".join(parts), usage
+        for c in chunk["choices"]:
+            parts.append(c["delta"].get("content") or "")
+            finish = c.get("finish_reason") or finish
+    return "".join(parts), usage, finish
 
 
 class Embedder:
@@ -151,6 +185,8 @@ class Embedder:
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         res = await self.http.post("/embeddings", json={"model": self.model, "input": texts})
+        if res.status_code in (401, 403) or res.status_code >= 500:
+            raise Unavailable(f"HTTP {res.status_code}: {res.text[:200]}")
         if res.status_code != 200:
             raise LLMError(f"HTTP {res.status_code}: {res.text[:200]}")
         return [d["embedding"] for d in sorted(res.json()["data"], key=lambda d: d["index"])]

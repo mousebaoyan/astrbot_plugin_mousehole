@@ -1,11 +1,16 @@
 """The forum's REST API (docs/api.md in the mousehole repo)."""
 
+import asyncio
 import gzip
 import json
 from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
+
+# Seconds before asking again while the forum restarts: refused, or its gateway answers 502 or
+# 503. Short, since a member may be waiting on the answer.
+RETRY_WAITS = (1, 3, 10)
 
 
 class ForumError(Exception):
@@ -57,7 +62,23 @@ class Forum:
             if compress:
                 headers["Content-Encoding"] = "gzip"
                 content = gzip.compress(content)
-        res = await self.http.request(method, path, content=content, params=params, headers=headers)
+        for wait in (*RETRY_WAITS, None):
+            try:
+                res = await self.http.request(
+                    method, path, content=content, params=params, headers=headers
+                )
+            except (httpx.ConnectError, httpx.ConnectTimeout):
+                # Never got there: safe to send again, whatever it asks.
+                if wait is None:
+                    raise
+            except httpx.TransportError:
+                # Maybe done but not answered: only reading, or what the key makes done once.
+                if wait is None or (method != "GET" and key is None):
+                    raise
+            else:
+                if res.status_code not in (502, 503) or wait is None:
+                    break
+            await asyncio.sleep(wait)
         if res.status_code == 204:
             return None
         if res.is_error:

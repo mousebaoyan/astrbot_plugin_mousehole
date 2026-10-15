@@ -121,11 +121,16 @@ class Cached(httpx.AsyncBaseTransport):
             content = await res.aread()
             if res.status_code != 200:
                 return httpx.Response(res.status_code, content=content)
+            _, usage, finish = await read(httpx.Response(200, content=content))
+            if usage:
+                cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
+                hour = datetime.now().hour
+                prompt, completion = usage["prompt_tokens"], usage["completion_tokens"]
+                self.spent += credits(prompt, completion, hour, cached)
+            if finish is None:
+                # Broken off: asked again, not kept.
+                return httpx.Response(200, content=content)
             self.answers[key] = content.decode()
-            _, usage = await read(httpx.Response(200, content=content))
-            cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
-            hour = datetime.now().hour
-            self.spent += credits(usage["prompt_tokens"], usage["completion_tokens"], hour, cached)
             line = json.dumps({"request": key, "response": self.answers[key]}) + "\n"
             # One write, so runs going at once don't mix their lines.
             with self.path.open("ab", buffering=0) as f:

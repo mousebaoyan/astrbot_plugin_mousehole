@@ -2,13 +2,14 @@
 
 import asyncio
 
+import httpx
 from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools
 
 from .mousehole.archive import Archive, Message, Tuning, plain
 from .mousehole.events import Events
-from .mousehole.forum import Forum
+from .mousehole.forum import Forum, ForumError
 from .mousehole.llm import LLM, Embedder, Settings
 from .mousehole.login import login, wants_login
 from .mousehole.qq import QQ
@@ -16,6 +17,7 @@ from .mousehole.similar import Index
 from .mousehole.sync import Sync
 
 NAME = "astrbot_plugin_mousehole"
+START_RETRY = 60
 
 
 class Mousehole(Star):
@@ -75,20 +77,26 @@ class Mousehole(Star):
             bio=c["push_bio"],
             index=index,
         )
-        self.tasks = [asyncio.create_task(self.start(index))]
+        self.tasks = [asyncio.create_task(self.start())]
         # When AstrBot starts, plugins load before the platforms; installed or reloaded later,
         # the platform is already there.
         if self.qq.found():
             self.listen()
 
-    async def start(self, index: Index | None) -> None:
-        # Groups are known before any event or message is acted on.
-        await self.sync.refresh_groups()
+    async def start(self) -> None:
+        # Groups are known before any event or message is acted on, even if the forum is down
+        # as AstrBot starts.
+        while True:
+            try:
+                await self.sync.refresh_groups()
+                break
+            except (ForumError, httpx.HTTPError) as e:
+                logger.warning("鼠洞插件：连不上论坛（%s），%d 秒后再试", e, START_RETRY)
+                await asyncio.sleep(START_RETRY)
         self.tasks.append(asyncio.create_task(self.sync.run()))
         if self.events.types:
             self.tasks.append(asyncio.create_task(self.events.run()))
-        if self.archive and index:
-            await index.load()
+        if self.archive:
             self.tasks.append(asyncio.create_task(self.archive.run()))
 
     @filter.on_platform_loaded()
