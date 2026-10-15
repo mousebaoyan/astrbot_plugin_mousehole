@@ -364,3 +364,20 @@ async def test_new_tags_are_made_once_and_only_so_many_a_day(setup):
     assert len(s.forum.tags) == 2 + 10
     assert s.forum.threads[max(s.forum.threads)].tags == []
     assert report["dropped"] == ["tag 学校9: 10 made today already"]
+
+
+async def test_a_round_with_enough_messages_closes_once_the_group_falls_quiet(setup):
+    s = setup(Script())
+    a = s.archive
+    a.tuning = Tuning(round_pause_minutes=2, round_least=3)
+    for i in range(1, 3):
+        a.add(GROUP, message(i, ASKER, "嗯"), BOT)
+    chat = a.chats[GROUP]
+    last = chat.pending[-1].time
+    a.tick(last + 120)
+    assert a.queue.empty()
+    a.add(GROUP, message(3, ASKER, "嗯"), BOT)
+    a.tick(chat.pending[-1].time + 119)
+    assert a.queue.empty()
+    a.tick(chat.pending[-1].time + 120)
+    assert a.queue.qsize() == 1

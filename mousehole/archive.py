@@ -36,6 +36,10 @@ class Tuning:
     # A round closes at this many messages, or this long after its first.
     round_messages: int = 30
     round_minutes: float = 10
+    # Or once it has this many and the group fell quiet for this long: a talk that stopped is
+    # given whole to the LLM, rather than cut where a count happened to fall. 0 doesn't.
+    round_pause_minutes: float = 0
+    round_least: int = 20
     # A question is followed until this many messages have passed its last related one.
     follow_messages: int = 200
 
@@ -47,6 +51,8 @@ class Tuning:
             threshold=config["onejev"]["threshold"],
             round_messages=archive["round_messages"],
             round_minutes=archive["round_minutes"],
+            round_pause_minutes=archive["round_pause_minutes"],
+            round_least=archive["round_least"],
             follow_messages=archive["follow_messages"],
         )
 
@@ -233,8 +239,15 @@ class Archive:
             self.close(chat)
 
     def tick(self, now: float) -> None:
+        t = self.tuning
         for chat in self.chats.values():
-            if chat.pending and now - chat.started >= self.tuning.round_minutes * 60:
+            if not chat.pending:
+                continue
+            quiet = now - chat.pending[-1].time
+            paused = t.round_pause_minutes and quiet >= t.round_pause_minutes * 60
+            if now - chat.started >= t.round_minutes * 60 or (
+                paused and len(chat.pending) >= t.round_least
+            ):
                 self.close(chat)
 
     def close(self, chat: Chat) -> None:

@@ -87,6 +87,18 @@
         "default": 10,
         "hint": "一轮的第一条消息之后过了这么久，不够条数也交给模型。要赶在 QQ 图片链接过期前转存，不要超过 60。"
       },
+      "round_pause_minutes": {
+        "description": "群里停了几分钟就交出一轮",
+        "type": "float",
+        "default": 0,
+        "hint": "一轮攒够下面的条数后，群里这么久没人说话就交给模型，一段讨论尽量整段交过去。0 不按停顿切。用回放调。"
+      },
+      "round_least": {
+        "description": "按停顿切时一轮至少几条",
+        "type": "int",
+        "default": 20,
+        "hint": "不到这么多条时，停顿了也接着攒。"
+      },
       "follow_messages": {
         "description": "跟进一个问题多少条消息",
         "type": "int",
