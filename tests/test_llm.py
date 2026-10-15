@@ -64,7 +64,7 @@ async def test_requests_carry_the_chosen_options(change, expected, absent):
     (body,) = sent
     assert body.items() >= expected.items()
     assert not set(absent) & set(body)
-    assert (body["model"], body["max_tokens"], body["stream"]) == ("ecnu-plus", 16384, True)
+    assert (body["model"], body["max_tokens"], body["stream"]) == ("ecnu-plus", 32768, True)
 
 
 async def test_too_many_requests_at_once_wait_their_turn():

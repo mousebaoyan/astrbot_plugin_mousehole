@@ -1,6 +1,9 @@
+from contextlib import aclosing
+from datetime import datetime
+
 from conftest import BOT, GROUP, Script, message
 
-from mousehole.archive import Tuning
+from mousehole.archive import BATCH_HOURS, Message, Tuning, load, segments, until
 
 TUNING = Tuning()
 
@@ -26,7 +29,7 @@ ANSWER = {
 }
 
 
-def first_round():
+def first_batch():
     return [
         message(1, ASKER, "大家预推免第一批和第二批"),
         message(2, ASKER, "能都报吗"),
@@ -35,9 +38,9 @@ def first_round():
 
 
 async def asked(setup, *later_answers: object):
-    """A setup whose first round asked QUESTION and got ANSWER."""
+    """A setup whose first batch asked QUESTION and got ANSWER."""
     s = setup(Script({"new": [QUESTION, ANSWER], "edit": []}, *later_answers))
-    await s.round(*first_round())
+    await s.batch(*first_batch())
     return s
 
 
@@ -45,27 +48,63 @@ def thread_of(s):
     return next(iter(s.forum.threads.values()))
 
 
-async def test_rounds_close_at_size_or_after_a_while_and_leave_out_what_says_nothing(setup):
+async def test_messages_wait_on_disk_with_their_pictures_copied_and_chatter_left_out(
+    setup, tmp_path
+):
     s = setup(Script())
     a = s.archive
-    a.add(GROUP, message(1, ASKER, "不是"), BOT)
-    a.add(GROUP, message(2, BOT, "bot 自己说的"), BOT)
-    a.add(GROUP, message(3, ASKER, "/help"), BOT)
-    a.add(GROUP, message(4, ASKER, segments=[{"type": "face", "data": {"id": "1"}}]), BOT)
+    picture = {"type": "image", "data": {"sub_type": 0, "url": "https://gchat.qpic.cn/2"}}
     sticker = {"type": "image", "data": {"sub_type": 1, "url": "https://gchat.qpic.cn/1"}}
-    a.add(GROUP, message(5, ASKER, reply=1, segments=[sticker]), BOT)
-    chat = a.chats[GROUP]
-    assert [m.id for m in chat.pending] == [1]
+    await a.add(GROUP, message(1, ASKER, "不是"), BOT)
+    await a.add(GROUP, message(2, BOT, "bot 自己说的"), BOT)
+    await a.add(GROUP, message(3, ASKER, "/help"), BOT)
+    await a.add(GROUP, message(4, ASKER, segments=[{"type": "face", "data": {"id": "1"}}]), BOT)
+    await a.add(GROUP, message(5, ASKER, reply=1, segments=[sticker]), BOT)
+    await a.add(GROUP, message(6, ASKER, segments=[picture]), BOT)
+    await a.add(GROUP, message(7, ASKER, "发错了"), BOT)
+    a.recall(GROUP, 7)
+    a.start_batch()
+    [path] = (tmp_path / "batch").iterdir()
+    assert [(m.id, len(m.uploads)) for m in load(path)] == [(1, 0), (6, 1)]
+    assert s.forum.uploads == 1
 
-    a.tick(chat.started + TUNING.round_minutes * 60 - 1)
-    assert a.queue.empty()
-    a.tick(chat.started + TUNING.round_minutes * 60)
-    assert a.queue.qsize() == 1
 
-    for i in range(TUNING.round_messages):
-        a.add(GROUP, message(10 + i, ASKER, "嗯"), BOT)
-    assert a.queue.qsize() == 2
-    assert chat.pending == []
+def test_a_batch_is_cut_where_the_group_was_quiet_longest_and_small_pieces_joined():
+    def at(*times):
+        return [Message(i, ASKER, t, []) for i, t in enumerate(times)]
+
+    def cut(messages, most):
+        return [[m.time for m in piece] for piece in segments(messages, most)]
+
+    # 0–2 is one talk, 100–101 another; the lone 50 joins the talk before it, which has room.
+    assert cut(at(0, 1, 2, 50, 100, 101), 4) == [[0, 1, 2, 50], [100, 101]]
+    assert cut(at(0, 1, 10, 11, 30), 2) == [[0, 1], [10, 11], [30]]
+    assert cut(at(0, 1), 50) == [[0, 1]]
+
+
+def test_batches_start_at_four_and_eighteen():
+    def at(hour, minute=0):
+        return datetime(2026, 10, 15, hour, minute).timestamp()
+
+    assert until(BATCH_HOURS, at(17, 30)) == 1800
+    assert until(BATCH_HOURS, at(18)) == 10 * 3600
+    assert until(BATCH_HOURS, at(3)) == 3600
+
+
+async def test_a_batch_a_restart_broke_off_goes_on_from_the_next_segment(setup, tmp_path):
+    s = setup(Script({"new": [], "edit": []}), tuning=Tuning(segment_messages=2))
+    await s.archive.refresh_taxonomy()
+    for i in range(1, 5):
+        await s.archive.add(GROUP, message(i * 100, ASKER, f"第 {i} 条"), BOT)
+    s.archive.start_batch()
+    async with aclosing(s.archive.batch()) as batch:
+        await anext(batch)
+
+    again = setup(Script({"new": [], "edit": []}))
+    await again.batch()
+    [(_, prompt)] = again.llm.prompts
+    assert "第 3 条" in prompt and "第 4 条" in prompt and "第 2 条" not in prompt
+    assert list((tmp_path / "batch").iterdir()) == []
 
 
 async def test_a_question_and_its_answer_become_a_thread_and_a_reply(setup):
@@ -84,7 +123,7 @@ async def test_a_question_and_its_answer_become_a_thread_and_a_reply(setup):
 async def test_what_the_asker_adds_later_rewrites_the_opening_and_its_title(setup):
     edit = {"post": "Q1", "messages": [4], "title": "rank 10% 预推免两批能都报吗", "body": "新正文"}
     s = await asked(setup, {"new": [], "edit": [edit]})
-    report = await s.round(message(4, ASKER, "我 rank 前 10%", reply=3))
+    report = await s.batch(message(4, ASKER, "我 rank 前 10%", reply=3))
 
     assert "Q1 标题：预推免第一批和第二批能都报吗" in s.llm.prompts[1][1]
     t = thread_of(s)
@@ -95,7 +134,7 @@ async def test_what_the_asker_adds_later_rewrites_the_opening_and_its_title(setu
 async def test_messages_archived_already_are_not_posted_again(setup):
     again = {**QUESTION, "messages": [1, 4], "title": "又一个标题哦"}
     s = await asked(setup, {"new": [again], "edit": []})
-    report = await s.round(message(4, ASKER, "有人知道吗"))
+    report = await s.batch(message(4, ASKER, "有人知道吗"))
     assert len(s.forum.threads) == 1
     assert "new N1: #1 is archived already" in report["dropped"]
 
@@ -104,7 +143,7 @@ async def test_a_floor_changed_on_the_forum_is_left_to_its_writer(setup):
     edit = {"post": "Q1", "messages": [4], "title": None, "body": "新正文"}
     s = await asked(setup, {"new": [], "edit": [edit]})
     thread_of(s).posts[0].edited_at = 123
-    report = await s.round(message(4, ASKER, "补充一下", reply=1))
+    report = await s.batch(message(4, ASKER, "补充一下", reply=1))
     assert thread_of(s).posts[0].body == QUESTION["body"]
     assert report["dropped"] == [f"edit {thread_of(s).posts[0].id}: changed on the forum"]
 
@@ -113,7 +152,7 @@ async def test_the_same_question_asked_again_goes_into_the_thread_as_a_floor(set
     again = {**QUESTION, "messages": [4], "same_as": "Q1"}
     answer = {**ANSWER, "question": "N1", "messages": [5], "ref": "N2"}
     s = await asked(setup, {"new": [{**again, "ref": "N1"}, answer], "edit": []})
-    await s.round(message(4, OTHER, "预推免两批可以都报吗"), message(5, ANSWERER, "可以"))
+    await s.batch(message(4, OTHER, "预推免两批可以都报吗"), message(5, ANSWERER, "可以"))
     t = thread_of(s)
     asked_again, answered = t.posts[2:]
     assert (len(s.forum.threads), asked_again.author, asked_again.sources) == (1, OTHER, [4])
@@ -136,7 +175,7 @@ async def test_a_question_some_older_thread_asks_goes_there(setup):
         },
         act_as=OTHER,
     )
-    await s.round(message(1, ASKER, "预推免第一批和第二批能都报吗"))
+    await s.batch(message(1, ASKER, "预推免第一批和第二批能都报吗"))
     t = s.forum.threads[older["id"]]
     assert (len(s.forum.threads), t.posts[-1].author) == (1, ASKER)
     system, prompt = s.llm.prompts[1]
@@ -146,22 +185,22 @@ async def test_a_question_some_older_thread_asks_goes_there(setup):
 async def test_someone_who_turned_archiving_off_is_left_out_with_answers_to_them(setup):
     s = setup(Script({"new": [QUESTION, ANSWER], "edit": []}))
     s.forum.proxy_disabled.add(ASKER)
-    report = await s.round(*first_round())
+    report = await s.batch(*first_batch())
     assert s.forum.threads == {}
     assert report["dropped"] == ["new N1: forum proxy_disabled", "new N2: N1 was not posted"]
 
 
 async def test_questions_are_followed_for_a_while_then_found_again_by_quotes(setup):
-    # Seven rounds of chatter, then two more.
+    # Four segments of chatter, then two batches more.
     s = await asked(setup, *[{"new": [], "edit": []}] * 9)
     chatter = [message(10 + i, OTHER, "哈哈") for i in range(TUNING.follow_messages)]
-    await s.round(*chatter)
+    await s.batch(*chatter)
     chat = s.archive.chats[GROUP]
     assert len(chat.following) == 1
-    await s.round(message(500, OTHER, "哈哈"))
+    await s.batch(message(500, OTHER, "哈哈"))
     assert chat.following == []
 
-    await s.round(message(501, OTHER, "那第二批呢", reply=3))
+    await s.batch(message(501, OTHER, "那第二批呢", reply=3))
     assert len(chat.following) == 1
     assert "Q1 标题" in s.llm.prompts[-1][1]
 
@@ -183,54 +222,23 @@ async def test_a_quote_of_a_message_no_longer_kept_fetches_its_thread_to_go_by(s
         },
         act_as=ASKER,
     )
-    report = await s.round(message(1, ASKER, "我又想到一点", reply=7))
+    report = await s.batch(message(1, ASKER, "我又想到一点", reply=7))
     prompt = s.llm.prompts[0][1]
     assert "Q1 标题：很早以前的问题" in prompt and "Q1（论坛上）：早先的正文" in prompt
     assert report["dropped"] == ["edit Q1: not a floor that can be edited"]
 
 
-async def test_a_recalled_message_still_waiting_leaves_its_round(setup):
-    s = setup(Script())
-    s.archive.add(GROUP, message(1, ASKER, "发错了"), BOT)
-    s.archive.recall(GROUP, 1, ASKER)
-    assert s.archive.chats[GROUP].pending == []
-
-
-async def test_a_recalled_message_leaves_its_floor_organized_anew(setup):
-    s = await asked(setup, {"title": "预推免两批能都报吗", "body": "能都报吗？"})
-    s.archive.recall(GROUP, 1, ASKER)
-    await s.archive.handle(s.archive.queue.get_nowait())
-    opening = thread_of(s).posts[0]
-    assert (opening.body, opening.sources) == ("能都报吗？", [2])
-    assert "能都报吗" in s.llm.prompts[1][1] and "大家预推免" not in s.llm.prompts[1][1]
-
-
-async def test_a_floor_of_only_the_recalled_message_is_deleted(setup):
-    s = await asked(setup)
-    s.archive.recall(GROUP, 3, ANSWERER)
-    await s.archive.handle(s.archive.queue.get_nowait())
-    assert thread_of(s).posts[1].deleted
-
-
-async def test_a_recalled_message_no_longer_kept_deletes_the_floor_it_became(setup):
-    s = setup(Script())
-    forum = s.forum.client()
-    thread = await forum.call(
-        "POST",
-        "/threads",
-        body={
-            "board": "qa",
-            "kind": "question",
-            "title": "很早以前的问题",
-            "tags": [],
-            "content": {"onebot": [{"type": "text", "data": {"text": "正文"}}]},
-            "source": {"chat_type": "group", "chat_id": GROUP, "message_ids": [7]},
-        },
-        act_as=ASKER,
+async def test_a_message_recalled_while_its_batch_is_worked_on_is_left_out(setup):
+    s = setup(
+        Script({"new": [], "edit": []}, {"new": [], "edit": []}), tuning=Tuning(segment_messages=1)
     )
-    s.archive.recall(GROUP, 7, ASKER)
-    await s.archive.handle(s.archive.queue.get_nowait())
-    assert s.forum.threads[thread["id"]].deleted
+    await s.archive.refresh_taxonomy()
+    await s.archive.add(GROUP, message(1, ASKER, "第一段"), BOT)
+    await s.archive.add(GROUP, message(1000, ASKER, "发错了"), BOT)
+    s.archive.start_batch()
+    async for _ in s.archive.batch():
+        s.archive.recall(GROUP, 1000)
+    assert len(s.llm.prompts) == 1
 
 
 # The test embedder finds every thread alike, so each new one is checked against those there.
@@ -247,7 +255,7 @@ async def test_a_discussion_becomes_a_thread_of_whoever_started_it(setup):
     started = {**QUESTION, "type": "discussion", "messages": [1], "title": "今年夏令营机试改了题型"}
     reply = {**ANSWER, "messages": [2]}
     s = setup(Script({"new": [started, reply], "edit": []}))
-    await s.round(
+    await s.batch(
         message(1, ASKER, "听说今年机试改成项目题了"), message(2, ANSWERER, "我们学校也是")
     )
     t = thread_of(s)
@@ -256,46 +264,50 @@ async def test_a_discussion_becomes_a_thread_of_whoever_started_it(setup):
         ASKER,
         [ASKER, ANSWERER],
     )
-    [(group, segments)] = s.sent
-    assert group == GROUP
-    assert texts(segments) == (
-        f"@{ASKER} 这个讨论收录到鼠洞了：今年夏令营机试改了题型\nhttps://forum.test/t/{t.id}"
+    await s.archive.send_summary()
+    [(_, segments)] = s.sent
+    assert texts(segments).endswith(
+        f"@{ASKER} （讨论）今年夏令营机试改了题型\nhttps://forum.test/t/{t.id}"
     )
 
 
-async def test_a_round_sends_one_receipt_naming_each_new_thread_and_question_asked_before(setup):
+async def test_the_summary_names_each_new_thread_and_question_asked_before(setup):
     again = {**QUESTION, "ref": "N1", "messages": [4], "same_as": "Q1"}
     other = {**QUESTION, "ref": "N2", "messages": [5], "title": "夏令营要带简历吗", "same_as": None}
     s = await asked(setup, {"new": [again, other], "edit": []}, NOT_SEEN)
     first = thread_of(s)
-    await s.round(
+    await s.batch(
         message(4, OTHER, "预推免两批可以都报吗"), message(5, ANSWERER, "夏令营要带简历吗")
     )
     assert [p.author for p in first.posts] == [ASKER, ANSWERER, OTHER]
+    assert s.sent == []
+
+    await s.archive.send_summary()
     second = max(s.forum.threads)
-    _, segments = s.sent[-1]
+    [(group, segments)] = s.sent
+    assert group == GROUP
     assert texts(segments) == (
-        f"@{OTHER} 这个问题鼠洞上有人问过，已经有 1 条回复：{QUESTION['title']}\n"
+        "鼠洞收录了群里的 3 个帖子：\n"
+        f"@{ASKER} {QUESTION['title']}\nhttps://forum.test/t/{first.id}\n"
+        f"@{OTHER} 你问的鼠洞上有人问过，已经有 1 条回复：{QUESTION['title']}\n"
         f"https://forum.test/t/{first.id}\n"
-        f"@{ANSWERER} 你的问题收录到鼠洞了：夏令营要带简历吗\nhttps://forum.test/t/{second}"
+        f"@{ANSWERER} 夏令营要带简历吗\nhttps://forum.test/t/{second}"
     )
-    assert len(s.sent) == 2
+    await s.archive.send_summary()
+    assert len(s.sent) == 1
 
 
-async def test_receipts_stop_for_the_hour_after_four_and_threads_are_archived_still(setup):
-    def round_of(i):
-        return {"new": [{**QUESTION, "messages": [i], "title": f"第 {i} 个问题来了"}], "edit": []}
+async def test_the_summary_waits_on_disk_and_names_ten_at_most(setup):
+    entry = {"user": ASKER, "kind": "question", "thread": 1, "title": "问题", "again": False}
+    s = setup(Script())
+    s.archive.remember(GROUP, [entry] * 12)
 
-    later = [answer for i in range(2, 7) for answer in (round_of(i), NOT_SEEN)]
-    s = setup(Script(round_of(1), *later))
-    for i in range(1, 6):
-        s.now = i * 60
-        report = await s.round(message(i, ASKER, f"问题 {i}"))
-    assert (len(s.forum.threads), len(s.sent)) == (5, 4)
-    assert report["dropped"] == ["receipt: 4 sent this hour"]
-    s.now = 3600 + 61
-    await s.round(message(6, ASKER, "问题 6"))
-    assert len(s.sent) == 5
+    again = setup(Script())
+    await again.archive.send_summary()
+    [(_, segments)] = again.sent
+    assert texts(segments).count("问题") == 10
+    assert texts(segments).endswith("还有 2 个，到鼠洞上看：https://forum.test")
+    assert again.archive.summary == {}
 
 
 async def test_a_question_asked_in_a_thread_since_locked_or_deleted_gets_its_own(setup):
@@ -305,11 +317,11 @@ async def test_a_question_asked_in_a_thread_since_locked_or_deleted_gets_its_own
     s = await asked(setup, {"new": [again], "edit": []}, {"new": [again_later], "edit": []})
     first = thread_of(s)
     first.locked = True
-    await s.round(message(4, OTHER, "预推免两批可以都报吗"))
+    await s.batch(message(4, OTHER, "预推免两批可以都报吗"))
     assert len(s.forum.threads) == 2
     newer = s.forum.threads[max(s.forum.threads)]
     newer.deleted = True
-    await s.round(message(5, OTHER, "预推免两批真的都能报吗"))
+    await s.batch(message(5, OTHER, "预推免两批真的都能报吗"))
     assert len(s.forum.threads) == 3
 
 
@@ -336,30 +348,13 @@ async def test_new_tags_are_made_once_and_only_so_many_a_day(setup):
             NOT_SEEN,
         )
     )
-    await s.round(message(1, ASKER, "华东师大预推免"))
+    await s.batch(message(1, ASKER, "华东师大预推免"))
     assert thread_of(s).tags == ["华东师大", "预推免"]
     # The test forum knows 夏令营 and 预推免 to begin with.
     assert s.forum.tags.count("华东师大") == 1
 
-    await s.round(message(2, ASKER, "a"), message(3, ASKER, "b"))
-    report = await s.round(message(4, OTHER, "c"))
+    await s.batch(message(2, ASKER, "a"), message(3, ASKER, "b"))
+    report = await s.batch(message(4, OTHER, "c"))
     assert len(s.forum.tags) == 2 + 10
     assert s.forum.threads[max(s.forum.threads)].tags == []
     assert report["dropped"] == ["tag 学校9: 10 made today already"]
-
-
-async def test_a_round_with_enough_messages_closes_once_the_group_falls_quiet(setup):
-    s = setup(Script())
-    a = s.archive
-    a.tuning = Tuning(round_pause_minutes=2, round_least=3)
-    for i in range(1, 3):
-        a.add(GROUP, message(i, ASKER, "嗯"), BOT)
-    chat = a.chats[GROUP]
-    last = chat.pending[-1].time
-    a.tick(last + 120)
-    assert a.queue.empty()
-    a.add(GROUP, message(3, ASKER, "嗯"), BOT)
-    a.tick(chat.pending[-1].time + 119)
-    assert a.queue.empty()
-    a.tick(chat.pending[-1].time + 120)
-    assert a.queue.qsize() == 1

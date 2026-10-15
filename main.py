@@ -59,6 +59,7 @@ class Mousehole(Star):
                 self.forum,
                 self.llm.complete,
                 index,
+                data=data,
                 prefixes=self.context.get_config()["wake_prefix"],
                 site=c["forum_url"],
                 notify=self.qq.send_group if c["archive"]["notify"] else None,
@@ -135,8 +136,6 @@ class Mousehole(Star):
         elif raw["post_type"] == "message" and raw["group_id"] in self.sync.groups:
             group = raw["group_id"]
             self.sync.saw(group, raw["user_id"], raw["time"])
-            if self.archives(group):
-                self.archive.add(group, Message.from_onebot(raw), raw["self_id"])
             at_bot = any(
                 s["type"] == "at" and str(s["data"]["qq"]) == str(raw["self_id"])
                 for s in raw["message"]
@@ -144,6 +143,9 @@ class Mousehole(Star):
             if self.config["login"] and at_bot and plain(raw["message"]).strip().startswith("登录"):
                 event.stop_event()
                 await self.qq.reply(raw, "登录请私聊我")
+            # Last: copying its pictures to the forum takes a moment.
+            if self.archives(group):
+                await self.archive.add(group, Message.from_onebot(raw), raw["self_id"])
 
     async def on_notice(self, raw: dict) -> None:
         if raw["notice_type"] != "group_recall":
@@ -151,7 +153,7 @@ class Mousehole(Star):
             return
         # Admins taking back others' messages are not followed (design §8.7).
         if self.archives(raw["group_id"]) and raw["operator_id"] == raw["user_id"]:
-            self.archive.recall(raw["group_id"], raw["message_id"], raw["user_id"])
+            self.archive.recall(raw["group_id"], raw["message_id"])
 
     def archives(self, group: int) -> bool:
         if self.archive is None or group not in self.sync.groups:

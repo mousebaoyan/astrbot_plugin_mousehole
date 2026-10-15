@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -36,12 +37,12 @@ def message(id: int, user: int, text: str = "", *, reply: int | None = None, seg
 
 
 class Setup:
-    def __init__(self, llm: Script):
+    def __init__(self, llm: Script, data: Path, **options):
         self.forum = FakeForum(tags=["夏令营", "预推免"])
         client = self.forum.client()
         self.llm = llm
         self.now = 0.0
-        # (group, segments) of each receipt sent.
+        # (group, segments) of each summary sent.
         self.sent: list[tuple[int, list[dict]]] = []
 
         async def notify(group: int, segments: list[dict]) -> None:
@@ -52,26 +53,25 @@ class Setup:
             client,
             llm,
             self.index,
+            data=data,
             prefixes=["/"],
             site="https://forum.test",
             notify=notify,
             clock=lambda: self.now,
+            **options,
         )
 
-    async def round(self, *messages: Message) -> dict:
-        """The messages taken in and worked through, as one round unless there are more than a
-        round holds. The last round's report."""
+    async def batch(self, *messages: Message) -> dict:
+        """The messages taken in and archived as one batch; the last segment's report."""
         if not self.archive.boards:
             await self.archive.refresh_taxonomy()
         for m in messages:
-            self.archive.add(GROUP, m, BOT)
-        if self.archive.chats[GROUP].pending:
-            self.archive.close(self.archive.chats[GROUP])
-        while not self.archive.queue.empty():
-            report = await self.archive.handle(self.archive.queue.get_nowait())
-        return report
+            await self.archive.add(GROUP, m, BOT)
+        self.archive.start_batch()
+        self.now += 1
+        return [report async for report in self.archive.batch()][-1]
 
 
 @pytest.fixture
-def setup():
-    return Setup
+def setup(tmp_path):
+    return lambda llm, **options: Setup(llm, tmp_path, **options)

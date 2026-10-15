@@ -40,7 +40,7 @@ class Settings:
     thinking: str = "enabled"
     reasoning_effort: str = "low"
     temperature: float = 0.2
-    max_tokens: int = 16384
+    max_tokens: int = 32768
     # How long nothing may come: answers stream, however long they take.
     timeout_seconds: int = 120
     # 0 for no limit.

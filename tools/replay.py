@@ -8,14 +8,16 @@ import asyncio
 import json
 import re
 import sys
+import tempfile
 from collections import Counter, defaultdict
+from contextlib import aclosing
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import httpx
 
 from mousehole import judge
-from mousehole.archive import Archive, Message, Tuning
+from mousehole.archive import BATCH_HOURS, SUMMARY_HOUR, Archive, Message, Tuning, until
 from mousehole.llm import LLM, Embedder, Settings, read
 from mousehole.similar import Index
 from tools.fake_forum import FakeForum, Thread, bigrams
@@ -139,7 +141,7 @@ def moment(value: str) -> float:
     return datetime.fromisoformat(value).timestamp()
 
 
-def until(value: str) -> float:
+def up_to(value: str) -> float:
     """`YYYY-MM-DD` up to the end of that day, or `YYYY-MM-DD HH:MM` up to then."""
     end = datetime.fromisoformat(value)
     return (end + timedelta(days=1) if len(value) == len("YYYY-MM-DD") else end).timestamp()
@@ -149,7 +151,7 @@ async def replay(args: argparse.Namespace) -> None:
     export = json.loads(Path(args.export).read_text(encoding="utf-8"))
     group, bot, messages = convert(export)
     start = moment(args.start) if args.start else float("-inf")
-    end = until(args.until) if args.until else float("inf")
+    end = up_to(args.until) if args.until else float("inf")
     messages = [m for m in messages if start <= m[0].time < end]
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -172,93 +174,96 @@ async def replay(args: argparse.Namespace) -> None:
     embedder = Embedder(e["base_url"], e["api_key"], e["model"])
     tuning = Tuning.of(config)
 
-    async def nowhere(group: int, segments: list[dict]) -> None:
-        pass
+    # Each summary that would have gone: (when, group, segments).
+    sent: list[tuple[float, int, list[dict]]] = []
+
+    async def told(group: int, segments: list[dict]) -> None:
+        sent.append((now, group, segments))
 
     index = Index(forum, embedder.embed, e["model"], None, e["min_similarity"])
+    data = tempfile.TemporaryDirectory()
     archive = Archive(
         forum,
         llm.complete,
         index,
+        data=Path(data.name),
         prefixes=["/"],
         site=SITE,
-        # Sent nowhere: each round's report says what went.
-        notify=nowhere,
+        notify=told,
         tuning=tuning,
         clock=lambda: now,
     )
     await archive.refresh_taxonomy()
     reports: list[dict] = []
-    # Written as each round ends: a run stopped halfway keeps what it has paid for.
-    rounds_file = out / "rounds.jsonl"
-    rounds_file.write_text("", encoding="utf-8")
+    # Written as each segment ends: a run stopped halfway keeps what it has paid for.
+    segments_file = out / "segments.jsonl"
+    segments_file.write_text("", encoding="utf-8")
 
     shown = {m.id: (m, name, text) for m, name, text in messages}
 
     def enough() -> bool:
-        return args.rounds is not None and len(reports) >= args.rounds
+        return args.segments is not None and len(reports) >= args.segments
 
     def write() -> None:
-        """What the rounds so far came to: written after each, to read while a run goes on."""
+        """What the segments so far came to: written after each, to read while a run goes
+        on."""
         (out / "threads.md").write_text(threads_md(fake, shown, reports), encoding="utf-8")
-        kept = sum(chat.count for chat in archive.chats.values())
-        summary = summary_md(fake, shown, kept, reports, tuning, cache)
+        # Of the segments run: a batch's messages are all kept as it starts.
+        kept = sum(r["numbers"][1] - r["numbers"][0] + 1 for r in reports)
+        summary = summary_md(fake, shown, kept, reports, sent, tuning, cache)
         (out / "summary.md").write_text(summary, encoding="utf-8")
 
-    async def drain() -> None:
-        while not archive.queue.empty() and not enough():
-            job = archive.queue.get_nowait()
-            try:
-                report = await archive.handle(job)
-            except Exception as e:
-                # As in the plugin, the round is lost and the next ones go on.
-                report = failed(job.messages, e)
-            reports.append(report)
-            with rounds_file.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(report, ensure_ascii=False) + "\n")
-            write()
-            print(
-                f"round {len(reports)}: #{report['numbers'][0]}–#{report['numbers'][1]}"
-                f" done={len(report['done'])} dropped={len(report['dropped'])}"
-                f" spent={cache.spent:.1f} credits",
-                file=sys.stderr,
-            )
+    async def batch() -> None:
+        archive.start_batch()
+        async with aclosing(archive.batch()) as segments:
+            async for report in segments:
+                reports.append(report)
+                with segments_file.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps(report, ensure_ascii=False) + "\n")
+                write()
+                print(
+                    f"segment {len(reports)}: #{report['numbers'][0]}–#{report['numbers'][1]}"
+                    f" done={len(report['done'])} dropped={len(report['dropped'])}"
+                    f" spent={cache.spent:.1f} credits",
+                    file=sys.stderr,
+                )
+                if enough():
+                    return
 
+    # Batches and summaries at the hours the messages came, as the plugin would have.
+    if messages:
+        first = messages[0][0].time
+        next_batch = first + until(BATCH_HOURS, first)
+        next_summary = first + until((SUMMARY_HOUR,), first)
     for m, _, _ in messages:
         if enough():
             break
+        while min(next_batch, next_summary) <= m.time and not enough():
+            if next_batch < next_summary:
+                now = next_batch
+                await batch()
+                next_batch += until(BATCH_HOURS, next_batch)
+            else:
+                now = next_summary
+                await archive.send_summary()
+                next_summary += until((SUMMARY_HOUR,), next_summary)
         now = m.time
-        archive.tick(now)
-        await drain()
-        archive.add(group, m, bot)
-        await drain()
+        await archive.add(group, m, bot)
     if not enough():
-        archive.tick(float("inf"))
-        await drain()
+        await batch()
+    # What the batches so far would have told, though the morning hadn't come.
+    await archive.send_summary()
+    data.cleanup()
 
     write()
     if not args.boards:
         categories = await categories_md(fake, llm)
         (out / "categories.md").write_text(categories, encoding="utf-8")
     print(
-        f"done: {len(fake.threads)} threads, {len(reports)} rounds, {cache.hits} calls cached,"
-        f" {cache.spent:.1f} credits spent → {out}",
+        f"done: {len(fake.threads)} threads, {len(reports)} segments, {len(sent)} summaries,"
+        f" {cache.hits} calls cached, {cache.spent:.1f} credits spent → {out}",
         file=sys.stderr,
     )
-
-
-def failed(messages: list[Message], error: Exception) -> dict:
-    """A round that raised, reported like the others: what it cost is not known."""
-    return {
-        "numbers": [messages[0].number, messages[-1].number],
-        "times": [messages[0].time, messages[-1].time],
-        "llm": [],
-        "done": [],
-        "dropped": [f"failed: {error!r}"],
-        "asked_again": [],
-        "receipts": [],
-        "receipt_sent": False,
-    }
 
 
 # ---- What it writes
@@ -271,11 +276,10 @@ def clock(t: float) -> str:
 def threads_md(fake: FakeForum, shown: dict, reports: list[dict]) -> str:
     again = {a["post"]: a["how"] for r in reports for a in r.get("asked_again", [])}
     names = {m.user: name for m, name, _ in shown.values()}
-    receipts = defaultdict(list)
+    told = defaultdict(list)
     for r in reports:
-        for x in r.get("receipts", []):
-            sent = "发了" if r["receipt_sent"] else "超过每小时的上限，没发"
-            receipts[x["thread"]].append(f"@{names[x['user']]}（{sent}）")
+        for x in r["summary"]:
+            told[x["thread"]].append(f"@{names[x['user']]}")
     lines = ["# 本来会发的帖子", ""]
     for n, t in enumerate(sorted(fake.threads.values(), key=lambda t: t.created_at), 1):
         state = "（已删除）" if t.deleted else ""
@@ -283,7 +287,7 @@ def threads_md(fake: FakeForum, shown: dict, reports: list[dict]) -> str:
         lines += [
             f"## {n}. {t.title}{state}",
             f"{kind}，版块 {t.board}，标签 {'、'.join(t.tags) or '无'}",
-            f"回执：{'、'.join(receipts[t.id]) or '无'}",
+            f"汇总里：{'、'.join(told[t.id]) or '无'}",
             "",
         ]
         for p in t.posts:
@@ -316,48 +320,44 @@ def reason(text: str) -> str:
 
 
 def summary_md(
-    fake: FakeForum, shown: dict, kept: int, reports: list[dict], tuning: Tuning, cache: Cached
+    fake: FakeForum,
+    shown: dict,
+    kept: int,
+    reports: list[dict],
+    sent: list[tuple[float, int, list[dict]]],
+    tuning: Tuning,
+    cache: Cached,
 ) -> str:
-    rounds = [r for r in reports if "numbers" in r]
-    # The stretch the rounds cover, so a run of a few rounds isn't taken for a day.
-    span = (rounds[-1]["times"][1] - rounds[0]["times"][0]) / 86400 if rounds else 0
+    # The stretch the segments cover, so a run of a few segments isn't taken for a day.
+    span = (reports[-1]["times"][1] - reports[0]["times"][0]) / 86400 if reports else 0
     days = max(span, 1 / 24)
-    organized = [r for r in rounds if r["llm"]]
+    organized = [r for r in reports if r["llm"]]
     calls = [c for r in reports for c in r["llm"]]
     posts = [p for t in fake.threads.values() for p in t.posts]
     again = Counter(a["how"] for r in reports for a in r.get("asked_again", []))
     dropped = Counter(reason(d) for r in reports for d in r["dropped"])
-    told = [r for r in rounds if r["receipts"]]
-
-    def cost(dearer: bool) -> float:
-        """As the plugin would have paid, at the hours the messages came, or all at night. With
-        nothing cached: ECNU keeps it about five minutes, and live rounds are mostly further
-        apart than that, unlike replay's."""
-        total = 0.0
-        for r in rounds:
-            hour = datetime.fromtimestamp(r["times"][0]).hour if dearer else 0
-            total += sum(credits(c["input_tokens"], c["output_tokens"], hour) for c in r["llm"])
-        return round(total, 1)
+    named = sum(len(r["summary"]) for r in reports)
+    # At the night price the batches run at, with nothing cached: replay's segments go one after
+    # another as the plugin's do, but a run may take its answers from llm-cache.jsonl.
+    cost = round(sum(credits(c["input_tokens"], c["output_tokens"], 0) for c in calls), 1)
 
     rows = [
         ("有效消息（去掉表情、命令和 bot 的）", kept),
-        ("轮次", len(rounds)),
-        ("交给大模型的轮次", len(organized)),
+        ("段", len(reports)),
+        ("交给大模型的段", len(organized)),
         ("大模型调用", len(calls)),
         ("输入 token", sum(c["input_tokens"] for c in calls)),
         ("输出 token", sum(c["output_tokens"] for c in calls)),
         ("大模型耗时（秒）", round(sum(c["seconds"] for c in calls))),
-        ("ECNU 积分（原价）", cost(False)),
-        ("ECNU 积分（8–18 点翻倍）", cost(True)),
+        ("ECNU 积分（夜间价，不算缓存）", cost),
         ("新帖", len(fake.threads)),
         ("回复", sum(p.floor > 1 for p in posts) - sum(again.values())),
         ("更新", sum(len(p.revisions) for p in posts)),
         ("same_as 并进旧帖", again["same_as"]),
         ("查重并进旧帖", again["search"]),
         ("讨论帖", sum(t.kind == "discussion" for t in fake.threads.values())),
-        ("回执（条）", sum(r["receipt_sent"] for r in told)),
-        ("回执里 @ 的人次", sum(len(r["receipts"]) for r in told if r["receipt_sent"])),
-        ("超过每小时上限没发的回执", sum(not r["receipt_sent"] for r in told)),
+        ("汇总（条）", len(sent)),
+        ("汇总里写到的帖子", named),
     ]
     lines = [
         f"# 回放结果（{days:.2f} 天的消息）",
@@ -369,6 +369,13 @@ def summary_md(
     lines += ["", "## 丢掉的项", "", "| 原因 | 次数 |", "| --- | --- |"]
     lines += [f"| {r} | {n} |" for r, n in dropped.most_common()]
     lines += ["", "## 疑似重复的帖子", ""] + suspects(fake, shown, tuning.follow_messages)
+    names = {m.user: name for m, name, _ in shown.values()}
+    for t, _, segments in sent:
+        text = "".join(
+            s["data"]["text"] if s["type"] == "text" else f"@{names[int(s['data']['qq'])]}"
+            for s in segments
+        )
+        lines += ["", f"## {clock(t)} 的汇总", "", "```text", text, "```"]
     lines += [
         "",
         f"这次跑实际花了 {cache.spent:.1f} 积分（按跑的时候的价格），"
@@ -444,7 +451,7 @@ def main() -> None:
     parser.add_argument(
         "--until", help="到这天为止，含这天（YYYY-MM-DD），或者到这一刻（YYYY-MM-DD HH:MM）"
     )
-    parser.add_argument("--rounds", type=int, help="跑满这么多轮就停，先小范围试时用")
+    parser.add_argument("--segments", type=int, help="跑满这么多段就停，先小范围试时用")
     asyncio.run(replay(parser.parse_args()))
 
 

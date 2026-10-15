@@ -1,21 +1,25 @@
-"""Auto-archiving (design §8). Group messages gather into rounds; the LLM organizes what each
-round has worth keeping into threads and floors under their writers' names. The questions stay
-followed, so later answers and additions find their place."""
+"""Auto-archiving (design §8). Group messages wait on disk for the day's two batches; the LLM
+organizes what each segment of a batch has worth keeping into threads and floors under their
+writers' names. The questions stay followed, so later answers and additions find their place,
+and each morning a summary in the group names the threads."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections import deque
-from collections.abc import Awaitable, Callable, Coroutine
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
+
+import httpx
 
 from . import judge
 from .forum import Forum, ForumError
-from .llm import BudgetExhausted
 from .similar import Index
 
 log = logging.getLogger("astrbot.mousehole")
@@ -30,13 +34,9 @@ Notify = Callable[[int, list[dict]], Awaitable[None]]
 class Tuning:
     """What replay tunes (docs/replay.md §1), which the plugin's settings may change."""
 
-    # A round closes at this many messages, or this long after its first.
-    round_messages: int = 30
-    round_minutes: float = 10
-    # Or once it has this many and the group fell quiet for this long: a talk that stopped is
-    # given whole to the LLM, rather than cut where a count happened to fall. 0 doesn't.
-    round_pause_minutes: float = 0
-    round_least: int = 20
+    # A segment, organized in one call, holds at most this many messages: the LLM thinks longer
+    # the more there are, and past its output limit the whole segment is lost.
+    segment_messages: int = 50
     # A question is followed until this many messages have passed its last related one.
     follow_messages: int = 200
 
@@ -45,23 +45,20 @@ class Tuning:
         """From the plugin's settings (_conf_schema.json)."""
         archive = config["archive"]
         return cls(
-            round_messages=archive["round_messages"],
-            round_minutes=archive["round_minutes"],
-            round_pause_minutes=archive["round_pause_minutes"],
-            round_least=archive["round_least"],
+            segment_messages=archive["segment_messages"],
             follow_messages=archive["follow_messages"],
         )
 
 
-# Messages before a round that the LLM sees too.
+# Messages before a segment that the LLM sees too.
 ORGANIZE_BEFORE = 20
-# Messages kept per group, for context, quotes and recalls.
+# Messages kept per group before the segment worked on, for context and quotes.
 KEPT = 1000
-TICK = 10
-TAXONOMY_EVERY = 3600
-# Receipts in a group within an hour, beyond which a round's goes unsent (design §8.8): the bot
-# speaking up often is what gets an account taken for a robot.
-RECEIPTS_PER_HOUR = 4
+# Batches start at these hours, both at ECNU's night price; the summary goes at SUMMARY_HOUR.
+BATCH_HOURS = (4, 18)
+SUMMARY_HOUR = 8
+# Threads a summary names, so that it @s few and doesn't flood the group.
+SUMMARY_ITEMS = 10
 NEW_TAGS_PER_DAY = 10
 
 PLACEHOLDERS = {
@@ -88,18 +85,47 @@ def plain(segments: list[dict]) -> str:
     return "".join(s["data"]["text"] for s in segments if s["type"] == "text")
 
 
+def until(hours: tuple[int, ...], now: float) -> float:
+    """Seconds from `now` to the next of these hours o'clock."""
+    hour = datetime.fromtimestamp(now).replace(minute=0, second=0, microsecond=0)
+    times = [(hour.replace(hour=h) + timedelta(days=d)).timestamp() for d in (0, 1) for h in hours]
+    return min(t for t in times if t > now) - now
+
+
+def segments(messages: list[Message], most: int) -> list[list[Message]]:
+    """A batch cut where the group was quiet longest until no piece holds more than `most`, so a
+    talk mostly stays whole; then neighbours joined while they fit, so the night's few messages
+    don't each make a call (design §8.1)."""
+    pieces: list[list[Message]] = []
+    todo = [messages]
+    while todo:
+        ms = todo.pop()
+        if len(ms) <= most:
+            pieces.append(ms)
+            continue
+        i = max(range(1, len(ms)), key=lambda i: ms[i].time - ms[i - 1].time)
+        todo += [ms[i:], ms[:i]]
+    joined: list[list[Message]] = []
+    for piece in pieces:
+        if joined and len(joined[-1]) + len(piece) <= most:
+            joined[-1] = joined[-1] + piece
+        else:
+            joined.append(piece)
+    return joined
+
+
 @dataclass(eq=False)
 class Message:
     id: int
     user: int
     time: float
     segments: list[dict]
+    # Where its pictures are on the forum, copied there as it came.
+    uploads: list[str] = field(default_factory=list)
     # Its number in the group, which the models refer to it by.
     number: int = 0
     floor: Floor | None = None
     recalled: bool = False
-    # Where its pictures are stored on the forum, once copied there.
-    uploads: list[str] | None = None
 
     @property
     def quoted(self) -> int | None:
@@ -108,6 +134,44 @@ class Message:
     @classmethod
     def from_onebot(cls, event: dict) -> Message:
         return cls(event["message_id"], event["user_id"], event["time"], event["message"])
+
+    def record(self) -> dict:
+        """As it waits on disk."""
+        return {
+            "id": self.id,
+            "user": self.user,
+            "time": self.time,
+            "segments": self.segments,
+            "uploads": self.uploads,
+        }
+
+
+def load(path: Path) -> list[Message]:
+    """A batch's messages, without those taken back."""
+    messages: dict[int, Message] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        record = json.loads(line)
+        if "recall" in record:
+            messages.pop(record["recall"], None)
+        else:
+            messages[record["id"]] = Message(**record)
+    # Pictures copied as a message came may have put it after a later one.
+    return sorted(messages.values(), key=lambda m: m.time)
+
+
+def content(messages: list[Message], body: str) -> dict:
+    """The organized text, then the pictures in the messages, copied to the forum already."""
+    segments = [{"type": "text", "data": {"text": body}}]
+    segments += [{"type": "image", "data": {"url": u}} for m in messages for u in m.uploads]
+    return {"onebot": segments}
+
+
+def write(path: Path, records: list[dict]) -> None:
+    part = path.with_suffix(".part")
+    part.write_text(
+        "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records), encoding="utf-8"
+    )
+    part.replace(path)
 
 
 @dataclass(eq=False)
@@ -143,8 +207,6 @@ class Chat:
         self.count = 0
         self.kept: deque[Message] = deque()
         self.by_id: dict[int, Message] = {}
-        self.pending: list[Message] = []
-        self.started = 0.0
         # Writers are U1, U2… to the models, which never see QQ numbers or names.
         self.aliases: dict[int, str] = {}
         self.following: list[Question] = []
@@ -157,22 +219,11 @@ class Chat:
         m.number = self.count
         self.kept.append(m)
         self.by_id[m.id] = m
-        if len(self.kept) > KEPT:
+
+    def forget(self, number: int) -> None:
+        """Messages more than KEPT before this one."""
+        while self.kept and self.kept[0].number <= number - KEPT:
             self.by_id.pop(self.kept.popleft().id, None)
-
-
-@dataclass
-class Round:
-    chat: Chat
-    messages: list[Message]
-
-
-@dataclass
-class Recall:
-    group: int
-    message_id: int
-    user: int
-    message: Message | None
 
 
 class Archive:
@@ -182,14 +233,15 @@ class Archive:
         complete: Complete,
         index: Index,
         *,
+        data: Path,
         prefixes: list[str],
         site: str,
         notify: Notify | None = None,
         tuning: Tuning | None = None,
         clock: Callable[[], float] = time.time,
     ):
-        """`site` is the forum's address for links in receipts; without `notify` none are
-        sent."""
+        """`data` is where messages wait and the summary is kept; `site` is the forum's address
+        for links in the summary; without `notify` none is sent."""
         self.forum = forum
         self.site = site.rstrip("/")
         self.notify = notify
@@ -198,12 +250,19 @@ class Archive:
         self.tuning = tuning or Tuning()
         self.prefixes = [p for p in prefixes if p]
         self.clock = clock
+        self.pending = data / "pending"
+        self.batches = data / "batch"
+        self.pending.mkdir(parents=True, exist_ok=True)
+        self.batches.mkdir(exist_ok=True)
+        self.summary_file = data / "summary.json"
+        # What the next summary in each group names.
+        self.summary: dict[int, list[dict]] = {}
+        if self.summary_file.exists():
+            saved = json.loads(self.summary_file.read_text(encoding="utf-8"))
+            self.summary = {int(group): entries for group, entries in saved.items()}
         self.chats: dict[int, Chat] = {}
-        self.queue: asyncio.Queue[Round | Recall] = asyncio.Queue()
         self.boards: list[dict] = []
         self.tags: list[str] = []
-        # When receipts went to each group in the last hour.
-        self.receipts_sent: dict[int, list[float]] = {}
         # The day new tags are counted for, and how many were made on it.
         self.tags_day = ""
         self.tags_made = 0
@@ -216,85 +275,124 @@ class Archive:
             return False
         return any(shows(s) for s in m.segments)
 
-    def add(self, group: int, m: Message, bot: int) -> None:
+    async def add(self, group: int, m: Message, bot: int) -> None:
+        """Kept on disk for the next batch, its pictures copied to the forum now: QQ's links
+        expire within hours (design §8.1)."""
         if not self.worth(m, bot):
             return
-        chat = self.chats.setdefault(group, Chat(group))
-        chat.keep(m)
-        if not chat.pending:
-            chat.started = m.time
-        chat.pending.append(m)
-        if len(chat.pending) >= self.tuning.round_messages:
-            self.close(chat)
-
-    def tick(self, now: float) -> None:
-        t = self.tuning
-        for chat in self.chats.values():
-            if not chat.pending:
+        for s in m.segments:
+            if s["type"] != "image" or is_sticker(s) or not s["data"].get("url"):
                 continue
-            quiet = now - chat.pending[-1].time
-            paused = t.round_pause_minutes and quiet >= t.round_pause_minutes * 60
-            if now - chat.started >= t.round_minutes * 60 or (
-                paused and len(chat.pending) >= t.round_least
-            ):
-                self.close(chat)
+            try:
+                picture = {"url": s["data"]["url"]}
+                stored = await self.forum.call(
+                    "POST", "/uploads/fetch", body=picture, act_as=m.user
+                )
+            except (ForumError, httpx.HTTPError) as e:
+                log.warning("A picture in message %s could not be copied: %s", m.id, e)
+                continue
+            m.uploads.append(stored["url"])
+        self.wait(group, m.record())
 
-    def close(self, chat: Chat) -> None:
-        self.queue.put_nowait(Round(chat, chat.pending))
-        chat.pending = []
-
-    def recall(self, group: int, message_id: int, user: int) -> None:
-        """Someone took back their own message."""
+    def recall(self, group: int, message_id: int) -> None:
+        """Someone took back their own message: left out unless archived already (design
+        §8.7)."""
+        self.wait(group, {"recall": message_id})
         chat = self.chats.get(group)
+        # In the batch being worked on.
         m = chat.by_id.get(message_id) if chat else None
         if m is not None:
             m.recalled = True
-            if m in chat.pending:
-                chat.pending.remove(m)
-                return
-        # After whatever round is being worked on, which may archive it yet.
-        self.queue.put_nowait(Recall(group, message_id, user, m))
+
+    def wait(self, group: int, record: dict) -> None:
+        with (self.pending / f"{group}.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    # ---- Batches
+
+    async def run(self) -> None:
+        await asyncio.gather(self.work_batches(), self.send_summaries())
+
+    async def work_batches(self) -> None:
+        # A batch a restart broke off is gone on with first.
+        while True:
+            try:
+                await self.refresh_taxonomy()
+                async for report in self.batch():
+                    # What the LLM wrote stays out of the logs: it is the members' words.
+                    tokens = sum(c["input_tokens"] + c["output_tokens"] for c in report["llm"])
+                    log.info(
+                        "Archive %s of group %s: %d tokens, done %s, dropped %s",
+                        report["numbers"],
+                        report["group"],
+                        tokens,
+                        report["done"],
+                        report["dropped"],
+                    )
+            except Exception:
+                log.exception("Archiving failed")
+            await asyncio.sleep(until(BATCH_HOURS, self.clock()))
+            self.start_batch()
+
+    async def send_summaries(self) -> None:
+        while True:
+            await asyncio.sleep(until((SUMMARY_HOUR,), self.clock()))
+            await self.send_summary()
 
     async def refresh_taxonomy(self) -> None:
         boards = (await self.forum.call("GET", "/boards"))["items"]
         self.boards = [b for b in boards if b["post_role"] == "user"]
         self.tags = [t["name"] for t in (await self.forum.call("GET", "/tags"))["items"]]
 
-    async def run(self) -> None:
-        refreshed = -TAXONOMY_EVERY
-        while True:
-            if self.clock() - refreshed >= TAXONOMY_EVERY:
-                try:
-                    await self.refresh_taxonomy()
-                    refreshed = self.clock()
-                except Exception:
-                    log.exception("Reading the boards and tags failed")
-            try:
-                job = await asyncio.wait_for(self.queue.get(), TICK)
-            except TimeoutError:
-                self.tick(self.clock())
-                continue
-            try:
-                report = await self.handle(job)
-                # What the LLM wrote stays out of the logs: it is the members' words.
-                tokens = sum(c["input_tokens"] + c["output_tokens"] for c in report["llm"])
-                log.info(
-                    "Archive %s: %d tokens, done %s, dropped %s",
-                    report.get("numbers") or f"recall of {report['recall']}",
-                    tokens,
-                    report["done"],
-                    report["dropped"],
-                )
-            except BudgetExhausted as e:
-                log.warning("Archiving skips a round: the LLM's daily tokens are used up (%s)", e)
-            except Exception:
-                log.exception("Archiving failed")
-            self.tick(self.clock())
+    def start_batch(self) -> None:
+        """What came since the last batch, to be archived now; what comes meanwhile waits for
+        the next. A batch not finished stays, in a file of its own."""
+        stamp = int(self.clock())
+        for path in self.pending.glob("*.jsonl"):
+            path.rename(self.batches / f"{path.stem}-{stamp}.jsonl")
 
-    async def handle(self, job: Round | Recall) -> dict[str, Any]:
-        if isinstance(job, Recall):
-            return await self.take_back(job)
-        return await self.work(job)
+    async def batch(self) -> AsyncIterator[dict[str, Any]]:
+        """Archives the batches there are, a group's after another's and segment by segment,
+        yielding each segment's report. What is left of a batch stays on disk till it is
+        done."""
+        for path in sorted(self.batches.glob("*.jsonl")):
+            group = int(path.stem.split("-")[0])
+            chat = self.chats.setdefault(group, Chat(group))
+            messages = load(path)
+            if not messages:
+                path.unlink()
+                continue
+            for m in messages:
+                chat.keep(m)
+            done = 0
+            for segment in segments(messages, self.tuning.segment_messages):
+                report = {
+                    "group": group,
+                    "numbers": [segment[0].number, segment[-1].number],
+                    "times": [segment[0].time, segment[-1].time],
+                    "llm": [],
+                    "done": [],
+                    "dropped": [],
+                    # Questions posted as floors in threads that asked them before.
+                    "asked_again": [],
+                    # What the summary is to name.
+                    "summary": [],
+                }
+                try:
+                    await self.work(chat, segment, report)
+                except Exception as e:
+                    # The segment is lost, and the next goes on (design §8.2).
+                    log.exception("Archiving a segment of group %s failed", group)
+                    report["dropped"].append(f"failed: {e!r}")
+                self.remember(group, report["summary"])
+                chat.forget(segment[-1].number)
+                done += len(segment)
+                rest = [m.record() for m in messages[done:] if not m.recalled]
+                if rest:
+                    write(path, rest)
+                else:
+                    path.unlink()
+                yield report
 
     # ---- What the models see
 
@@ -329,7 +427,7 @@ class Archive:
         return [m for m in kept[max(0, i - count) : i] if not m.recalled]
 
     def names(self, chat: Chat) -> tuple[dict[str, Question], dict[str, Floor]]:
-        """What Q1, Q2… and A1, A2… stand for in this round's prompts."""
+        """What Q1, Q2… and A1, A2… stand for in this segment's prompts."""
         questions = {f"Q{i}": q for i, q in enumerate(chat.following, 1)}
         floors: dict[str, Floor] = {ref: q.floor for ref, q in questions.items()}
         answers = [a for q in chat.following for a in q.answers]
@@ -360,26 +458,12 @@ class Archive:
         )
         return answer
 
-    # ---- A round
+    # ---- A segment
 
-    async def work(self, r: Round) -> dict[str, Any]:
-        chat = r.chat
-        messages = [m for m in r.messages if not m.recalled]
-        report: dict[str, Any] = {
-            "group": chat.group,
-            "numbers": [r.messages[0].number, r.messages[-1].number],
-            "times": [r.messages[0].time, r.messages[-1].time],
-            "llm": [],
-            "done": [],
-            "dropped": [],
-            # Questions posted as floors in threads that asked them before.
-            "asked_again": [],
-            # Who to tell their thread was archived, and whether the receipt went.
-            "receipts": [],
-            "receipt_sent": False,
-        }
+    async def work(self, chat: Chat, segment: list[Message], report: dict) -> None:
+        messages = [m for m in segment if not m.recalled]
         if not messages:
-            return report
+            return
         last = messages[-1].number
         follow = self.tuning.follow_messages
         chat.following = [q for q in chat.following if last - q.last <= follow]
@@ -398,9 +482,9 @@ class Archive:
         try:
             raw = judge.extract_json(answer)
         except ValueError:
-            log.warning("The LLM's answer for a round of group %s is not JSON", chat.group)
+            log.warning("The LLM's answer for a segment of group %s is not JSON", chat.group)
             report["dropped"].append("answer is not JSON")
-            return report
+            return
         plan = judge.check(
             raw,
             {m.number: m for m in before + messages},
@@ -413,25 +497,39 @@ class Archive:
         touched = await self.carry_out(chat, plan, questions, floors, report)
         for q in touched | quoted:
             q.last = last
-        await self.send_receipts(chat, report)
-        return report
 
-    async def send_receipts(self, chat: Chat, report: dict) -> None:
-        """One message for the round's new threads and questions asked before (design §8.8)."""
-        if not report["receipts"] or self.notify is None:
+    # ---- The summary
+
+    def remember(self, group: int, entries: list[dict]) -> None:
+        """What a segment brought, for the next summary in the group, kept through restarts."""
+        if not entries or self.notify is None:
             return
-        now = self.clock()
-        sent = [t for t in self.receipts_sent.get(chat.group, []) if now - t < 3600]
-        self.receipts_sent[chat.group] = sent
-        if len(sent) >= RECEIPTS_PER_HOUR:
-            report["dropped"].append(f"receipt: {RECEIPTS_PER_HOUR} sent this hour")
-            return
-        sent.append(now)
-        await self.notify(chat.group, receipt_message(report["receipts"], self.site))
-        report["receipt_sent"] = True
+        self.summary.setdefault(group, []).extend(entries)
+        self.save_summary()
+
+    def save_summary(self) -> None:
+        part = self.summary_file.with_suffix(".part")
+        part.write_text(json.dumps(self.summary, ensure_ascii=False), encoding="utf-8")
+        part.replace(self.summary_file)
+
+    async def send_summary(self) -> None:
+        """One message in each group that had threads archived since the last (design §8.8)."""
+        for group in list(self.summary):
+            entries = self.summary[group]
+            # Segments archived while it goes are for the next summary.
+            count = len(entries)
+            try:
+                await self.notify(group, summary_message(entries, self.site))
+            except Exception:
+                log.exception("Sending the archive summary to group %s failed", group)
+                continue
+            del entries[:count]
+            if not entries:
+                del self.summary[group]
+            self.save_summary()
 
     async def follow_quotes(self, chat: Chat, messages: list[Message]) -> set[Question]:
-        """Questions the round quotes archived messages of, followed again if they had lapsed."""
+        """Questions the segment quotes archived messages of, followed again if they had lapsed."""
         found: set[Question] = set()
         for m in messages:
             if m.quoted is None:
@@ -481,7 +579,7 @@ class Archive:
         floors: dict[str, Floor],
         report: dict,
     ) -> set[Question]:
-        """Posts what the round brought; returns the questions it touched."""
+        """Posts what the segment brought; returns the questions it touched."""
         asked: dict[str, Question] = {}
         answered: dict[str, Floor] = {}
         touched: set[Question] = set()
@@ -541,30 +639,6 @@ class Archive:
             "message_ids": [m.id for m in messages],
         }
 
-    async def content(self, author: int, messages: list[Message], body: str) -> dict:
-        """The organized text, then the pictures in the messages. Each picture is copied to the
-        forum once: QQ's links expire within hours, and a floor may be rewritten long after."""
-        segments = [{"type": "text", "data": {"text": body}}]
-        for m in messages:
-            if m.uploads is None:
-                m.uploads = []
-                for s in m.segments:
-                    if s["type"] != "image" or is_sticker(s) or not s["data"].get("url"):
-                        continue
-                    try:
-                        picture = {"url": s["data"]["url"]}
-                        stored = await self.forum.call(
-                            "POST", "/uploads/fetch", body=picture, act_as=author
-                        )
-                    except ForumError as e:
-                        if e.code != "fetch_failed":
-                            raise
-                        log.warning("A picture in message %s could not be copied", m.id)
-                        continue
-                    m.uploads.append(stored["url"])
-            segments += [{"type": "image", "data": {"url": url}} for url in m.uploads]
-        return {"onebot": segments}
-
     def settle(
         self, q: Question, post: dict, author: int, messages: list[Message], body: str
     ) -> Floor:
@@ -587,7 +661,7 @@ class Archive:
             q = Question(same.title, opening=False, last=0)
             q.floor = await self.post_floor(chat, q, same.floor.thread, item.messages, item.body)
             report["asked_again"].append({"post": q.floor.post, "how": how})
-            report["receipts"].append(
+            report["summary"].append(
                 {
                     "user": author,
                     "kind": item.kind,
@@ -609,7 +683,7 @@ class Archive:
                         "kind": item.kind,
                         "title": item.title,
                         "tags": await self.make_tags(item, report),
-                        "content": await self.content(author, item.messages, item.body),
+                        "content": content(item.messages, item.body),
                         "source": self.source(chat, item.messages),
                     },
                     act_as=author,
@@ -619,7 +693,7 @@ class Archive:
                     "GET", f"/threads/{thread['id']}/posts", params={"after": 0}
                 )
                 opening = posts["items"][0]
-                report["receipts"].append(
+                report["summary"].append(
                     {
                         "user": author,
                         "kind": item.kind,
@@ -631,13 +705,13 @@ class Archive:
             except ForumError as e:
                 if e.code != "source_exists":
                     raise
-                # Archived already, before the plugin restarted, and told then.
+                # Archived already, before a restart broke the segment off.
                 opening = await self.forum.call("GET", f"/posts/{e.details['post_id']}")
             q.floor = self.settle(q, opening, author, item.messages, item.body)
         chat.following.append(q)
         if q.opening:
             # The thread.created event would add it too, but a question asked again in the next
-            # round must find it already.
+            # segment must find it already.
             await self.index.put(q.floor.thread, item.title, item.body)
         return q
 
@@ -698,7 +772,7 @@ class Archive:
     ) -> Floor:
         author = messages[0].user
         payload = {
-            "content": await self.content(author, messages, body),
+            "content": content(messages, body),
             "source": self.source(chat, messages),
         }
         if reply_to is not None:
@@ -742,7 +816,7 @@ class Archive:
             "PATCH",
             f"/posts/{floor.post}",
             body={
-                "content": await self.content(floor.author, messages, body),
+                "content": content(messages, body),
                 "source": self.source(chat, messages),
             },
             act_as=floor.author,
@@ -784,87 +858,26 @@ class Archive:
             return None
         return await self.thread_question(chat, names[same])
 
-    # ---- Recalls
 
-    async def take_back(self, job: Recall) -> dict[str, Any]:
-        """A recalled message leaves its floor: the rest organized anew, or the floor deleted
-        when nothing else of it is at hand (design §8.7)."""
-        report: dict[str, Any] = {"recall": job.message_id, "llm": [], "done": [], "dropped": []}
-        m = job.message
-        if m is None:
-            try:
-                path = f"/bot/messages/group/{job.group}/{job.message_id}"
-                link = await self.forum.call("GET", path)
-            except ForumError as e:
-                if e.code != "message_not_linked":
-                    raise
-                return report
-            post = await self.forum.call("GET", f"/posts/{link['post_id']}")
-            await self.delete(link["thread_id"], post["id"], post["floor"] == 1, job.user, report)
-            return report
-        floor = m.floor
-        if floor is None:
-            return report
-        chat = self.chats[job.group]
-        q = floor.question
-        rest = [x for x in floor.messages if x is not m]
-        if not rest:
-            opening = q.opening and floor is q.floor
-            await self.delete(floor.thread, floor.post, opening, job.user, report)
-            m.floor = None
-            if floor is q.floor:
-                chat.following = [x for x in chat.following if x is not q]
-            else:
-                q.answers.remove(floor)
-            return report
-        lines = "\n".join(self.text(chat, x) for x in rest)
-        kind = "主楼" if floor is q.floor else "回复"
-        prompt = f"这一层是{kind}。剩下的消息：\n{lines}"
-        answer = await self.ask(report, judge.REORGANIZE, prompt, judge.REORGANIZE_SCHEMA)
-        try:
-            raw = judge.extract_json(answer)
-            body = raw["body"].strip()
-        except (ValueError, KeyError, AttributeError, TypeError):
-            log.warning("The LLM's rewrite after a recall is unusable; floor %s kept", floor.post)
-            report["dropped"].append("rewrite unusable")
-            return report
-        title = judge.title_of(raw.get("title")) if q.opening and floor is q.floor else None
-        if await self.rewrite(chat, floor, rest, body, title, report):
-            report["done"].append(f"rewrote {floor.post}")
-        m.floor = None
-        return report
+def summary_message(entries: list[dict], site: str) -> list[dict]:
+    """The summary (design §8.8): each new thread's writer, and each question asked before, @ed
+    with the thread."""
 
-    async def delete(self, thread: int, post: int, opening: bool, user: int, report: dict) -> None:
-        path = f"/threads/{thread}" if opening else f"/posts/{post}"
-        try:
-            await self.forum.call("DELETE", path, act_as=user)
-        except ForumError as e:
-            if e.status != 403:
-                raise
-            # A thread with replies stays; so does what its writer may no longer touch.
-            report["dropped"].append(f"delete {path}: {e.code}")
-            return
-        if opening:
-            self.index.remove(thread)
-        report["done"].append(f"deleted {path}")
+    def text(value: str) -> dict:
+        return {"type": "text", "data": {"text": value}}
 
-
-def receipt_message(receipts: list[dict], site: str) -> list[dict]:
-    """The round's receipt (design §8.8): each new thread's writer, and each question asked
-    before, @ed with the thread."""
-    segments: list[dict] = []
-    for r in receipts:
-        discussion = r["kind"] == "discussion"
-        if not r["again"]:
-            said = "这个讨论收录到鼠洞了" if discussion else "你的问题收录到鼠洞了"
+    segments = [text(f"鼠洞收录了群里的 {len(entries)} 个帖子：")]
+    for e in entries[:SUMMARY_ITEMS]:
+        discussion = e["kind"] == "discussion"
+        if not e["again"]:
+            said = f"（讨论）{e['title']}" if discussion else e["title"]
         else:
-            said = "这个话题鼠洞上讨论过" if discussion else "这个问题鼠洞上有人问过"
-            if r["replies"]:
-                said += f"，已经有 {r['replies']} 条回复"
-        if segments:
-            segments.append({"type": "text", "data": {"text": "\n"}})
-        segments += [
-            {"type": "at", "data": {"qq": str(r["user"])}},
-            {"type": "text", "data": {"text": f" {said}：{r['title']}\n{site}/t/{r['thread']}"}},
-        ]
+            said = "这个话题鼠洞上讨论过" if discussion else "你问的鼠洞上有人问过"
+            if e["replies"]:
+                said += f"，已经有 {e['replies']} 条回复"
+            said += f"：{e['title']}"
+        user = {"type": "at", "data": {"qq": str(e["user"])}}
+        segments += [text("\n"), user, text(f" {said}\n{site}/t/{e['thread']}")]
+    if len(entries) > SUMMARY_ITEMS:
+        segments.append(text(f"\n还有 {len(entries) - SUMMARY_ITEMS} 个，到鼠洞上看：{site}"))
     return segments
