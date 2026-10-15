@@ -458,6 +458,9 @@ def check(
                 plan.dropped.append(f"{what}: unknown question {question}")
                 continue
             reply_to = item.get("reply_to")
+            if reply_to == question and question in asked:
+                # Its own new thread named for what it replies to: the opening post.
+                reply_to = None
             if reply_to is not None and reply_to not in floors and reply_to not in answered:
                 plan.dropped.append(f"{what}: unknown reply_to {reply_to}")
                 continue

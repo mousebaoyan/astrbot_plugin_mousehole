@@ -86,3 +86,18 @@ def test_new_tags_must_be_short_of_a_known_kind_and_not_had_already():
     raw = {"new": [{**QUESTION, "tags": tags, "new_tags": new_tags}], "edit": []}
     [item] = check(raw, numbered(message(1, 1, "问"))).questions
     assert (item.tags, item.new_tags) == (["华东师范大学", "夏令营"], [("华东师范大学", "school")])
+
+
+def test_a_reply_naming_its_new_thread_replies_to_the_opening_post():
+    reply = {"ref": "N2", "type": "reply", "question": "N1", "messages": [2], "body": "可以"}
+    raw = {
+        "new": [
+            QUESTION,
+            {**reply, "reply_to": "N1"},
+            {**reply, "ref": "N3", "messages": [3], "reply_to": "N9"},
+        ],
+        "edit": [],
+    }
+    plan = check(raw, numbered(message(1, 1, "问"), message(2, 2, "可以"), message(3, 3, "嗯")))
+    assert [(a.ref, a.reply_to) for a in plan.answers] == [("N2", None)]
+    assert plan.dropped == ["new N3: unknown reply_to N9"]
