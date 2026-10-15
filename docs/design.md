@@ -1,6 +1,6 @@
 # 鼠洞插件 · 设计
 
-> 状态：成员同步、登录、个性签名和开奖已经在 AstrBot 上联调通过。自动收录改成每天收两批、早上发汇总，正在用回放调（第 8 节），之后建收录用的版块（第 8.9 节）、打开自动收录。第 8 节（自动收录）的分段大小、提示词和版块用历史记录调，见[回放实验](replay.md)。论坛要配合的改动列在第 11 节。论坛一侧见鼠洞仓库的[总体设计](https://github.com/mousebaoyan/mousehole/blob/main/docs/design.md)和[接口](https://github.com/mousebaoyan/mousehole/blob/main/docs/api.md)；本文只写插件自己的部分，接口细节以论坛的文档为准。
+> 状态：成员同步、登录、个性签名和开奖已经在 AstrBot 上联调通过。自动收录（每天收两批、早上发汇总，第 8 节）用回放调好后，2026-10-16 在两个主群打开，正在观察上线后的效果。第 8 节（自动收录）的分段大小、提示词和版块用历史记录调，见[回放实验](replay.md)。论坛要配合的改动列在第 11 节。论坛一侧见鼠洞仓库的[总体设计](https://github.com/mousebaoyan/mousehole/blob/main/docs/design.md)和[接口](https://github.com/mousebaoyan/mousehole/blob/main/docs/api.md)；本文只写插件自己的部分，接口细节以论坛的文档为准。
 
 ## 1. 目标
 
@@ -416,7 +416,7 @@ https://bbs.mousebaoyan.cn/t/43
 
 ### 8.9 版块和标签
 
-- 版块：用回放跑出的类别定下（[回放实验](replay.md)第 6 节），维护者确认后，用 `tools/boards.py` 按 `data/boards.json` 一次建好版块和初始标签，要 token 临时加上 `admin`。收录时大模型只从已有的版块里选，都不合适的放进兜底的版块。
+- 版块：用回放跑出的类别定下（[回放实验](replay.md)第 6 节），维护者确认后建好版块和初始标签：用 `tools/boards.py` 按 `data/boards.json` 建，要 token 临时加上 `admin`；或者用站长账号在后台建。收录时大模型只从成员能发帖的版块里选。现在有保研问答、经验分享、通知、院校交流、科研与读研、实习就业、闲聊、反馈建议。
 - 标签：大模型没有合适的已有标签时，可以给出新标签（名字不超过 10 个字，类别是 `topic`、`school` 或 `major`）。插件先用 `POST /tags` 建好再用，返回 `409 tag_exists` 就用已有的那个。每天最多新建 10 个，超了的这一项不带新标签，记日志。token 没有 `moderate`（`403 scope_missing`）时也一样，帖子照发，只是不带这个新标签。
 
 ### 8.10 以后再说
