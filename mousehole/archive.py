@@ -20,7 +20,7 @@ import httpx
 
 from . import judge
 from .forum import Forum, ForumError
-from .llm import Unavailable
+from .llm import Truncated, Unavailable
 from .similar import Index
 
 log = logging.getLogger("astrbot.mousehole")
@@ -410,7 +410,9 @@ class Archive:
                 if m.number == 0:
                     chat.keep(m)
             done = 0
-            for segment in segments(messages, self.tuning.segment_messages):
+            todo = segments(messages, self.tuning.segment_messages)
+            while todo:
+                segment = todo.pop(0)
                 report = {
                     "group": group,
                     "numbers": [segment[0].number, segment[-1].number],
@@ -425,6 +427,15 @@ class Archive:
                 }
                 try:
                     await self.work(chat, segment, report)
+                except Truncated as e:
+                    if len(segment) > 1:
+                        # Thought too long over it: its halves, each thought shorter over.
+                        report["dropped"].append(f"split: {e}")
+                        todo[:0] = segments(segment, (len(segment) + 1) // 2)
+                        self.remember(group, report["summary"])
+                        yield report
+                        continue
+                    report["dropped"].append(f"failed: {e!r}")
                 except Exception as e:
                     if unavailable(e):
                         # The segment stays in the file, to be tried again.
@@ -496,15 +507,18 @@ class Archive:
 
     async def ask(self, report: dict, system: str, prompt: str, schema: dict) -> str:
         started = time.monotonic()
-        answer, input_tokens, output_tokens = await self.complete(system, prompt, schema)
-        report["llm"].append(
-            {
-                "output": answer,
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
-                "seconds": round(time.monotonic() - started, 1),
-            }
-        )
+
+        def spent(answer: str, input_tokens: int, output_tokens: int) -> None:
+            seconds = round(time.monotonic() - started, 1)
+            call = {"output": answer, "input_tokens": input_tokens, "output_tokens": output_tokens}
+            report["llm"].append(call | {"seconds": seconds})
+
+        try:
+            answer, input_tokens, output_tokens = await self.complete(system, prompt, schema)
+        except Truncated as e:
+            spent("", e.input_tokens, e.output_tokens)
+            raise
+        spent(answer, input_tokens, output_tokens)
         return answer
 
     # ---- A segment

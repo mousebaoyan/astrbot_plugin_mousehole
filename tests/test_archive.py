@@ -5,7 +5,7 @@ import pytest
 from conftest import BOT, GROUP, Script, message
 
 from mousehole.archive import BATCH_HOURS, Message, Tuning, load, segments, until
-from mousehole.llm import Unavailable
+from mousehole.llm import Truncated, Unavailable
 
 TUNING = Tuning()
 
@@ -244,6 +244,18 @@ async def test_a_segment_a_service_failed_waits_in_its_batch_to_be_tried_again(s
     [report] = [r async for r in s.archive.batch()]
     assert report["numbers"] == [2, 2] and "哈哈" in s.llm.prompts[-1][1]
     assert (len(s.forum.threads), len(s.archive.summary[GROUP])) == (1, 1)
+
+
+async def test_a_segment_thought_too_long_over_is_split_in_halves(setup):
+    nothing = {"new": [], "edit": []}
+    s = setup(Script(Truncated(5000, 32768), nothing, nothing))
+    await s.archive.refresh_taxonomy()
+    for i in (1, 2, 100, 101):
+        await s.archive.add(GROUP, message(i, ASKER, f"第 {i} 条"), BOT)
+    s.archive.start_batch()
+    reports = [r async for r in s.archive.batch()]
+    assert [r["numbers"] for r in reports] == [[1, 4], [1, 2], [3, 4]]
+    assert reports[0]["llm"][0]["output_tokens"] == 32768
 
 
 async def test_a_message_recalled_while_its_batch_is_worked_on_is_left_out(setup):

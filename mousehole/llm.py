@@ -28,6 +28,16 @@ class LLMError(Exception):
     """An answer asking again won't put right: the segment is lost."""
 
 
+class Truncated(LLMError):
+    """The answer reached max_tokens before its JSON was whole, which was paid for all the
+    same."""
+
+    def __init__(self, input_tokens: int, output_tokens: int):
+        super().__init__(f"the answer reached max_tokens ({output_tokens})")
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+
+
 class Unavailable(Exception):
     """No answer to be had for now: the batch waits and tries again (design §8.2)."""
 
@@ -154,8 +164,8 @@ class LLM:
         tokens = usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
         self.spent += sum(tokens)
         if finish == "length":
-            # Thought all it may and stopped before the JSON was whole; another try would too.
-            raise LLMError(f"the answer reached max_tokens ({self.settings.max_tokens})")
+            # Thought all it may: another try at the same would too.
+            raise Truncated(*tokens)
         return answer, *tokens
 
 
