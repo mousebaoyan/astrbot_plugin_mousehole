@@ -195,7 +195,12 @@ async def replay(args: argparse.Namespace) -> None:
 
     async def drain() -> None:
         while not archive.queue.empty() and not enough():
-            report = await archive.handle(archive.queue.get_nowait())
+            job = archive.queue.get_nowait()
+            try:
+                report = await archive.handle(job)
+            except Exception as e:
+                # As in the plugin, the round is lost and the next ones go on.
+                report = failed(job.messages, e)
             reports.append(report)
             with rounds_file.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(report, ensure_ascii=False) + "\n")
@@ -227,6 +232,21 @@ async def replay(args: argparse.Namespace) -> None:
         categories = await categories_md(fake, llm)
         (out / "categories.md").write_text(categories, encoding="utf-8")
     print(f"done: {len(fake.threads)} threads, {len(reports)} rounds → {out}", file=sys.stderr)
+
+
+def failed(messages: list[Message], error: Exception) -> dict:
+    """A round that raised, reported like the others: what it cost is not known."""
+    return {
+        "numbers": [messages[0].number, messages[-1].number],
+        "times": [messages[0].time, messages[-1].time],
+        "scores": None,
+        "llm": [],
+        "done": [],
+        "dropped": [f"failed: {error!r}"],
+        "asked_again": [],
+        "receipts": [],
+        "receipt_sent": False,
+    }
 
 
 # ---- What it writes
