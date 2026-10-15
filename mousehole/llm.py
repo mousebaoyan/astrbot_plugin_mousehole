@@ -40,7 +40,9 @@ class Settings:
     reasoning_effort: str = "low"
     temperature: float = 0.2
     max_tokens: int = 16384
-    timeout_seconds: int = 300
+    # Long enough for max_tokens at ECNU's 20 or so a second: a call cut off may be charged all
+    # the same.
+    timeout_seconds: int = 900
     # 0 for no limit.
     tokens_per_day: int = 0
 

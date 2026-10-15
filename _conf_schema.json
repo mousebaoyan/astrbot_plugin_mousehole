@@ -183,8 +183,8 @@
       "timeout_seconds": {
         "description": "一次调用最多等几秒",
         "type": "int",
-        "default": 300,
-        "hint": "思考时白天的 ECNU 一次可能要两三分钟。超时的这一轮不再收录。"
+        "default": 900,
+        "hint": "ECNU 每秒约生成 20 个 token，输出到上限要十几分钟；比这短的话，超时断开后对方可能照样生成、照样扣积分。超时的这一轮不再收录。"
       },
       "tokens_per_day": {
         "description": "每天最多用多少 token",
