@@ -8,7 +8,7 @@ from typing import Any
 from .forum import Forum
 from .qq import QQ
 
-log = logging.getLogger("astrbot.mousehole")
+log = logging.getLogger("astrbot.plugin.astrbot_plugin_mousehole")
 
 FULL_EVERY = 3600
 

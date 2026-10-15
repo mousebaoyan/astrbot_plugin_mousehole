@@ -15,7 +15,7 @@ from .qq import QQ
 from .similar import Index
 from .sync import Sync
 
-log = logging.getLogger("astrbot.mousehole")
+log = logging.getLogger("astrbot.plugin.astrbot_plugin_mousehole")
 
 INDEX_TYPES = ["thread.created", "post.updated", "post.deleted"]
 BATCH = 500

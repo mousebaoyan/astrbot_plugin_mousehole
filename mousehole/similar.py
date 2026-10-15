@@ -9,7 +9,7 @@ import numpy as np
 
 from .forum import Forum
 
-log = logging.getLogger("astrbot.mousehole")
+log = logging.getLogger("astrbot.plugin.astrbot_plugin_mousehole")
 
 Embed = Callable[[list[str]], Awaitable[list[list[float]]]]
 

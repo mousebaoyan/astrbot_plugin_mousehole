@@ -23,7 +23,8 @@ from .forum import Forum, ForumError
 from .llm import Truncated, Unavailable
 from .similar import Index
 
-log = logging.getLogger("astrbot.mousehole")
+# The logger AstrBot sets up for the plugin, which its handlers need the fields of.
+log = logging.getLogger("astrbot.plugin.astrbot_plugin_mousehole")
 
 # (system prompt, prompt, JSON schema) → (answer, input tokens, output tokens)
 Complete = Callable[[str, str, dict], Awaitable[tuple[str, int, int]]]
