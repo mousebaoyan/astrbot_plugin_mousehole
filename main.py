@@ -9,7 +9,6 @@ from astrbot.api.star import Context, Star, StarTools
 from .mousehole.archive import Archive, Message, Tuning, plain
 from .mousehole.events import Events
 from .mousehole.forum import Forum
-from .mousehole.judge import OneJev
 from .mousehole.llm import LLM, Embedder, Settings
 from .mousehole.login import login, wants_login
 from .mousehole.qq import QQ
@@ -24,7 +23,6 @@ class Mousehole(Star):
         super().__init__(context)
         self.config = config
         self.forum: Forum | None = None
-        self.onejev: OneJev | None = None
         self.llm: LLM | None = None
         self.embedder: Embedder | None = None
         self.archive: Archive | None = None
@@ -41,16 +39,13 @@ class Mousehole(Star):
         self.sync = Sync(self.forum, self.qq, members=c["sync_members"])
         index = None
         self.archive_groups = {int(g) for g in c["archive"]["groups"]}
-        o, e, m = c["onejev"], c["embedding"], c["llm"]
+        e, m = c["embedding"], c["llm"]
         if c["archive"]["enabled"] and not all(
-            (o["url"], m["base_url"], m["model"], e["base_url"], e["model"])
+            (m["base_url"], m["model"], e["base_url"], e["model"])
         ):
             # The rest of the plugin works on; only archiving waits for its settings.
-            logger.error(
-                "鼠洞插件：自动收录要填好 OneJev、大模型和嵌入模型的地址和模型，现在不收录"
-            )
+            logger.error("鼠洞插件：自动收录要填好大模型和嵌入模型的地址和模型，现在不收录")
         elif c["archive"]["enabled"]:
-            self.onejev = OneJev(o["url"], o["api_key"], o["model"])
             self.llm = LLM(Settings.of(m))
             self.embedder = Embedder(e["base_url"], e["api_key"], e["model"])
             index = Index(
@@ -62,7 +57,6 @@ class Mousehole(Star):
             )
             self.archive = Archive(
                 self.forum,
-                self.onejev,
                 self.llm.complete,
                 index,
                 prefixes=self.context.get_config()["wake_prefix"],
@@ -122,7 +116,7 @@ class Mousehole(Star):
         for task in self.tasks:
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
-        for client in (self.forum, self.onejev, self.llm, self.embedder):
+        for client in (self.forum, self.llm, self.embedder):
             if client:
                 await client.close()
 

@@ -61,7 +61,7 @@
         "description": "自动收录群里的提问和回答",
         "type": "bool",
         "default": false,
-        "hint": "先配好下面的 OneJev、大模型和嵌入模型，用回放调好、在论坛上建好收录用的版块再打开（见仓库的 docs/replay.md）。"
+        "hint": "先配好下面的大模型和嵌入模型，用回放调好、在论坛上建好收录用的版块再打开（见仓库的 docs/replay.md）。"
       },
       "groups": {
         "description": "收录哪些群",
@@ -79,19 +79,19 @@
         "description": "一轮最多几条消息",
         "type": "int",
         "default": 30,
-        "hint": "攒够这么多条就交给模型判断。用回放调（docs/replay.md）。"
+        "hint": "攒够这么多条就交给大模型整理。用回放调（docs/replay.md）。"
       },
       "round_minutes": {
         "description": "一轮最多等几分钟",
         "type": "float",
         "default": 10,
-        "hint": "一轮的第一条消息之后过了这么久，不够条数也交给模型。要赶在 QQ 图片链接过期前转存，不要超过 60。"
+        "hint": "一轮的第一条消息之后过了这么久，不够条数也交给大模型。要赶在 QQ 图片链接过期前转存，不要超过 60。"
       },
       "round_pause_minutes": {
         "description": "群里停了几分钟就交出一轮",
         "type": "float",
         "default": 0,
-        "hint": "一轮攒够下面的条数后，群里这么久没人说话就交给模型，一段讨论尽量整段交过去。0 不按停顿切。用回放调。"
+        "hint": "一轮攒够下面的条数后，群里这么久没人说话就交给大模型，一段讨论尽量整段交过去。0 不按停顿切。用回放调。"
       },
       "round_least": {
         "description": "按停顿切时一轮至少几条",
@@ -104,41 +104,6 @@
         "type": "int",
         "default": 200,
         "hint": "问题最后一条相关消息之后，群里又过了这么多条，就不再跟进。"
-      }
-    }
-  },
-  "onejev": {
-    "description": "OneJev（自动收录的初筛）",
-    "type": "object",
-    "items": {
-      "url": {
-        "description": "服务地址",
-        "type": "string",
-        "default": "http://127.0.0.1:8000",
-        "hint": "连不上时收录暂停，不改用大模型。"
-      },
-      "api_key": {
-        "description": "API Key",
-        "type": "string",
-        "default": "",
-        "secret": true,
-        "hint": "服务没设密钥就留空。"
-      },
-      "model": {
-        "description": "模型名称",
-        "type": "string",
-        "default": "jev-latest"
-      },
-      "threshold": {
-        "description": "交给大模型的门槛",
-        "type": "float",
-        "default": 0.3,
-        "slider": {
-          "min": 0,
-          "max": 1,
-          "step": 0.05
-        },
-        "hint": "一轮里“有人提问”或“在回答跟进的问题”的概率到了这个数，才交给大模型整理。低了多花 token，高了会漏。用回放调。"
       }
     }
   },

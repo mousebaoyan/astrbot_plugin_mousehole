@@ -1,6 +1,6 @@
-"""Auto-archiving (design §8). Group messages gather into rounds; OneJev screens each round and
-the LLM organizes what is worth keeping into threads and floors under their writers' names. The
-questions stay followed, so later answers and additions find their place."""
+"""Auto-archiving (design §8). Group messages gather into rounds; the LLM organizes what each
+round has worth keeping into threads and floors under their writers' names. The questions stay
+followed, so later answers and additions find their place."""
 
 from __future__ import annotations
 
@@ -30,9 +30,6 @@ Notify = Callable[[int, list[dict]], Awaitable[None]]
 class Tuning:
     """What replay tunes (docs/replay.md §1), which the plugin's settings may change."""
 
-    # A round goes to the LLM when either OneJev answer reaches this. Low on purpose: a
-    # question missed is worse than tokens spent.
-    threshold: float = 0.3
     # A round closes at this many messages, or this long after its first.
     round_messages: int = 30
     round_minutes: float = 10
@@ -48,7 +45,6 @@ class Tuning:
         """From the plugin's settings (_conf_schema.json)."""
         archive = config["archive"]
         return cls(
-            threshold=config["onejev"]["threshold"],
             round_messages=archive["round_messages"],
             round_minutes=archive["round_minutes"],
             round_pause_minutes=archive["round_pause_minutes"],
@@ -57,12 +53,10 @@ class Tuning:
         )
 
 
-# Messages before a round that the models see too.
-SCREEN_BEFORE = 10
+# Messages before a round that the LLM sees too.
 ORGANIZE_BEFORE = 20
 # Messages kept per group, for context, quotes and recalls.
 KEPT = 1000
-ONEJEV_RETRY = 60
 TICK = 10
 TAXONOMY_EVERY = 3600
 # Receipts in a group within an hour, beyond which a round's goes unsent (design §8.8): the bot
@@ -185,7 +179,6 @@ class Archive:
     def __init__(
         self,
         forum: Forum,
-        onejev: judge.OneJev,
         complete: Complete,
         index: Index,
         *,
@@ -193,7 +186,6 @@ class Archive:
         site: str,
         notify: Notify | None = None,
         tuning: Tuning | None = None,
-        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         clock: Callable[[], float] = time.time,
     ):
         """`site` is the forum's address for links in receipts; without `notify` none are
@@ -201,18 +193,15 @@ class Archive:
         self.forum = forum
         self.site = site.rstrip("/")
         self.notify = notify
-        self.onejev = onejev
         self.complete = complete
         self.index = index
         self.tuning = tuning or Tuning()
         self.prefixes = [p for p in prefixes if p]
-        self.sleep = sleep
         self.clock = clock
         self.chats: dict[int, Chat] = {}
         self.queue: asyncio.Queue[Round | Recall] = asyncio.Queue()
         self.boards: list[dict] = []
         self.tags: list[str] = []
-        self.onejev_down = False
         # When receipts went to each group in the last hour.
         self.receipts_sent: dict[int, list[float]] = {}
         # The day new tags are counted for, and how many were made on it.
@@ -290,9 +279,8 @@ class Archive:
                 # What the LLM wrote stays out of the logs: it is the members' words.
                 tokens = sum(c["input_tokens"] + c["output_tokens"] for c in report["llm"])
                 log.info(
-                    "Archive %s: scores %s, %d tokens, done %s, dropped %s",
+                    "Archive %s: %d tokens, done %s, dropped %s",
                     report.get("numbers") or f"recall of {report['recall']}",
-                    report.get("scores"),
                     tokens,
                     report["done"],
                     report["dropped"],
@@ -381,7 +369,6 @@ class Archive:
             "group": chat.group,
             "numbers": [r.messages[0].number, r.messages[-1].number],
             "times": [r.messages[0].time, r.messages[-1].time],
-            "scores": None,
             "llm": [],
             "done": [],
             "dropped": [],
@@ -399,10 +386,6 @@ class Archive:
         quoted = await self.follow_quotes(chat, messages)
         questions, floors = self.names(chat)
         names = {floor: ref for ref, floor in floors.items()}
-        if not quoted:
-            scores = await self.screen(chat, messages, names, report)
-            if scores is None or max(scores.values()) < self.tuning.threshold:
-                return report
         before = self.before(chat, messages[0], ORGANIZE_BEFORE)
         prompt = judge.organize_prompt(
             [self.question_text(chat, ref, q, names) for ref, q in questions.items()],
@@ -448,8 +431,7 @@ class Archive:
         report["receipt_sent"] = True
 
     async def follow_quotes(self, chat: Chat, messages: list[Message]) -> set[Question]:
-        """Questions the round quotes archived messages of, followed again if they had lapsed.
-        Such a round skips OneJev: it is about something worth keeping already."""
+        """Questions the round quotes archived messages of, followed again if they had lapsed."""
         found: set[Question] = set()
         for m in messages:
             if m.quoted is None:
@@ -490,35 +472,6 @@ class Archive:
         q.floor = fetched(first["items"][0])
         q.answers = [fetched(p) for p in latest["items"] if p["floor"] > 1 and not p["deleted"]]
         return q
-
-    async def screen(
-        self, chat: Chat, messages: list[Message], names: dict[Floor, str], report: dict
-    ) -> dict[str, float] | None:
-        """OneJev's answers; while it can't be reached the round waits, rather than going to
-        the LLM and costing tokens. None when it won't take the round."""
-        before = [self.line(chat, m, names) for m in self.before(chat, messages[0], SCREEN_BEFORE)]
-        lines = [self.line(chat, m, names) for m in messages]
-        titles = [q.title for q in chat.following]
-        started = time.monotonic()
-        while True:
-            try:
-                scores = await self.onejev.screen(before, lines, titles)
-                break
-            except judge.OneJevRejected as e:
-                log.warning("OneJev refused a round of group %s: %s", chat.group, e)
-                report["dropped"].append(f"OneJev refused: {e}")
-                return None
-            except judge.OneJevDown as e:
-                if not self.onejev_down:
-                    log.warning("OneJev can't be reached, rounds wait: %s", e)
-                    self.onejev_down = True
-                await self.sleep(ONEJEV_RETRY)
-        if self.onejev_down:
-            log.info("OneJev is back")
-            self.onejev_down = False
-        report["scores"] = scores
-        report["onejev_seconds"] = round(time.monotonic() - started, 1)
-        return scores
 
     async def carry_out(
         self,

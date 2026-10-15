@@ -13,9 +13,11 @@ import httpx
 
 log = logging.getLogger("astrbot.mousehole")
 
-# Too many requests at once: ECNU allows 3 per model and person, shared with other plugins.
+# Too many requests at once: ECNU allows 3 per model and person, shared with other plugins, and
+# turns the rest away without charging. Tried for 10 minutes: a call that holds a place while
+# thinking may take 5.
 BUSY_WAIT = 15
-BUSY_TRIES = 8
+BUSY_TRIES = 40
 
 
 class LLMError(Exception):

@@ -1,6 +1,6 @@
-from conftest import BOT, GROUP, FakeOneJev, Script, message
+from conftest import BOT, GROUP, Script, message
 
-from mousehole.archive import ONEJEV_RETRY, Tuning
+from mousehole.archive import Tuning
 
 TUNING = Tuning()
 
@@ -68,21 +68,6 @@ async def test_rounds_close_at_size_or_after_a_while_and_leave_out_what_says_not
     assert chat.pending == []
 
 
-async def test_a_low_screen_keeps_the_round_from_the_llm(setup):
-    s = setup(Script(), FakeOneJev(question=0.1))
-    report = await s.round(message(1, ASKER, "今天好热"))
-    assert report["scores"] == {"question": 0.1}
-    assert s.llm.prompts == []
-
-
-async def test_while_onejev_is_down_the_round_waits_for_it(setup):
-    s = setup(Script({"new": [], "edit": []}), FakeOneJev(down=2))
-    await s.round(message(1, ASKER, "请问夏令营要准备什么"))
-    assert s.slept == [ONEJEV_RETRY, ONEJEV_RETRY]
-    assert s.onejev.calls == 3
-    assert len(s.llm.prompts) == 1
-
-
 async def test_a_question_and_its_answer_become_a_thread_and_a_reply(setup):
     s = await asked(setup)
     t = thread_of(s)
@@ -99,11 +84,8 @@ async def test_a_question_and_its_answer_become_a_thread_and_a_reply(setup):
 async def test_what_the_asker_adds_later_rewrites_the_opening_and_its_title(setup):
     edit = {"post": "Q1", "messages": [4], "title": "rank 10% 预推免两批能都报吗", "body": "新正文"}
     s = await asked(setup, {"new": [], "edit": [edit]})
-    calls = s.onejev.calls
     report = await s.round(message(4, ASKER, "我 rank 前 10%", reply=3))
 
-    # Quoting what was archived skips the screen.
-    assert s.onejev.calls == calls
     assert "Q1 标题：预推免第一批和第二批能都报吗" in s.llm.prompts[1][1]
     t = thread_of(s)
     assert (t.title, t.posts[0].body, t.posts[0].sources) == (edit["title"], "新正文", [1, 2, 4])
@@ -170,8 +152,8 @@ async def test_someone_who_turned_archiving_off_is_left_out_with_answers_to_them
 
 
 async def test_questions_are_followed_for_a_while_then_found_again_by_quotes(setup):
-    s = await asked(setup, {"new": [], "edit": []})
-    s.onejev.scores["question"] = 0.0
+    # Seven rounds of chatter, then two more.
+    s = await asked(setup, *[{"new": [], "edit": []}] * 9)
     chatter = [message(10 + i, OTHER, "哈哈") for i in range(TUNING.follow_messages)]
     await s.round(*chatter)
     chat = s.archive.chats[GROUP]

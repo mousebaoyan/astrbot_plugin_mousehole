@@ -11,7 +11,6 @@ import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
 
 import httpx
 
@@ -28,7 +27,7 @@ FREE_BOARD = {
     "post_role": "user",
 }
 # ECNU's credits per million tokens of ecnu-plus, doubled from 8 to 18 o'clock.
-CREDITS_IN, CREDITS_OUT = 100, 400
+CREDITS_IN, CREDITS_CACHED, CREDITS_OUT = 100, 20, 400
 DEARER_HOURS = range(8, 18)
 SITE = "https://bbs.mousebaoyan.cn"
 
@@ -89,14 +88,23 @@ def convert(export: dict) -> tuple[int, int, list[tuple[Message, str, str]]]:
 # ---- The models
 
 
+def credits(input_tokens: int, output_tokens: int, hour: int, cached: int = 0) -> float:
+    """What a call costs on ECNU at that hour of the day, `cached` of its input from the cache."""
+    total = (input_tokens - cached) * CREDITS_IN + cached * CREDITS_CACHED
+    return (total + output_tokens * CREDITS_OUT) / 1e6 * (2 if hour in DEARER_HOURS else 1)
+
+
 class Cached(httpx.AsyncBaseTransport):
-    """OneJev's answers kept by the whole request, so a rerun that only changes the LLM's prompts
-    doesn't wait on it again."""
+    """The LLM's answers kept by the whole request, shared by all runs: a run stopped halfway and
+    started again, or a longer one over the same start, pays only for the calls not made before.
+    `spent` is what the calls not found here cost."""
 
     def __init__(self, path: Path):
         self.path = path
         self.real = httpx.AsyncHTTPTransport()
         self.answers: dict[str, str] = {}
+        self.hits = 0
+        self.spent = 0.0
         if path.exists():
             for line in path.read_text(encoding="utf-8").splitlines():
                 entry = json.loads(line)
@@ -104,22 +112,23 @@ class Cached(httpx.AsyncBaseTransport):
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         key = request.content.decode()
-        if key not in self.answers:
+        if key in self.answers:
+            self.hits += 1
+        else:
             res = await self.real.handle_async_request(request)
             content = await res.aread()
             if res.status_code != 200:
                 return httpx.Response(res.status_code, content=content)
             self.answers[key] = content.decode()
-            with self.path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps({"request": key, "response": self.answers[key]}) + "\n")
+            usage = json.loads(content)["usage"]
+            cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
+            hour = datetime.now().hour
+            self.spent += credits(usage["prompt_tokens"], usage["completion_tokens"], hour, cached)
+            line = json.dumps({"request": key, "response": self.answers[key]}) + "\n"
+            # One write, so runs going at once don't mix their lines.
+            with self.path.open("ab", buffering=0) as f:
+                f.write(line.encode())
         return httpx.Response(200, text=self.answers[key])
-
-
-class Passing:
-    """Stands in for OneJev with --no-onejev: every round goes on to the LLM."""
-
-    async def screen(self, before: list[str], lines: list[str], titles: list[str]) -> dict:
-        return {"question": 1.0}
 
 
 # ---- The run
@@ -156,22 +165,12 @@ async def replay(args: argparse.Namespace) -> None:
     forum = fake.client()
     # The plugin's own settings, so replay asks the models just as it will.
     config = json.loads(Path(args.config).read_text(encoding="utf-8-sig"))
+    cache = Cached(out.parent / "llm-cache.jsonl")
     # Replay's days aren't today's: no daily limit.
-    llm = LLM(Settings.of(config["llm"] | {"tokens_per_day": 0}))
+    llm = LLM(Settings.of(config["llm"] | {"tokens_per_day": 0}), cache)
     e = config["embedding"]
     embedder = Embedder(e["base_url"], e["api_key"], e["model"])
-    if args.no_onejev:
-        onejev: Any = Passing()
-    else:
-        cache = Path(args.out).parent / "onejev-cache.jsonl"
-        o = config["onejev"]
-        onejev = judge.OneJev(o["url"], o["api_key"], o["model"], Cached(cache))
     tuning = Tuning.of(config)
-    if args.threshold is not None:
-        tuning.threshold = args.threshold
-
-    async def unreachable(seconds: float) -> None:
-        sys.exit("OneJev can't be reached")
 
     async def nowhere(group: int, segments: list[dict]) -> None:
         pass
@@ -179,7 +178,6 @@ async def replay(args: argparse.Namespace) -> None:
     index = Index(forum, embedder.embed, e["model"], None, e["min_similarity"])
     archive = Archive(
         forum,
-        onejev,
         llm.complete,
         index,
         prefixes=["/"],
@@ -187,7 +185,6 @@ async def replay(args: argparse.Namespace) -> None:
         # Sent nowhere: each round's report says what went.
         notify=nowhere,
         tuning=tuning,
-        sleep=unreachable,
         clock=lambda: now,
     )
     await archive.refresh_taxonomy()
@@ -205,7 +202,7 @@ async def replay(args: argparse.Namespace) -> None:
         """What the rounds so far came to: written after each, to read while a run goes on."""
         (out / "threads.md").write_text(threads_md(fake, shown, reports), encoding="utf-8")
         kept = sum(chat.count for chat in archive.chats.values())
-        summary = summary_md(fake, shown, kept, reports, tuning, args.threshold == 0)
+        summary = summary_md(fake, shown, kept, reports, tuning, cache)
         (out / "summary.md").write_text(summary, encoding="utf-8")
 
     async def drain() -> None:
@@ -222,8 +219,8 @@ async def replay(args: argparse.Namespace) -> None:
             write()
             print(
                 f"round {len(reports)}: #{report['numbers'][0]}–#{report['numbers'][1]}"
-                f" scores={report['scores']} done={len(report['done'])}"
-                f" dropped={len(report['dropped'])}",
+                f" done={len(report['done'])} dropped={len(report['dropped'])}"
+                f" spent={cache.spent:.1f} credits",
                 file=sys.stderr,
             )
 
@@ -243,7 +240,11 @@ async def replay(args: argparse.Namespace) -> None:
     if not args.boards:
         categories = await categories_md(fake, llm)
         (out / "categories.md").write_text(categories, encoding="utf-8")
-    print(f"done: {len(fake.threads)} threads, {len(reports)} rounds → {out}", file=sys.stderr)
+    print(
+        f"done: {len(fake.threads)} threads, {len(reports)} rounds, {cache.hits} calls cached,"
+        f" {cache.spent:.1f} credits spent → {out}",
+        file=sys.stderr,
+    )
 
 
 def failed(messages: list[Message], error: Exception) -> dict:
@@ -251,7 +252,6 @@ def failed(messages: list[Message], error: Exception) -> dict:
     return {
         "numbers": [messages[0].number, messages[-1].number],
         "times": [messages[0].time, messages[-1].time],
-        "scores": None,
         "llm": [],
         "done": [],
         "dropped": [f"failed: {error!r}"],
@@ -316,13 +316,12 @@ def reason(text: str) -> str:
 
 
 def summary_md(
-    fake: FakeForum, shown: dict, kept: int, reports: list[dict], tuning: Tuning, table: bool
+    fake: FakeForum, shown: dict, kept: int, reports: list[dict], tuning: Tuning, cache: Cached
 ) -> str:
     rounds = [r for r in reports if "numbers" in r]
     # The stretch the rounds cover, so a run of a few rounds isn't taken for a day.
     span = (rounds[-1]["times"][1] - rounds[0]["times"][0]) / 86400 if rounds else 0
     days = max(span, 1 / 24)
-    screened = [r for r in rounds if r["scores"] is not None]
     organized = [r for r in rounds if r["llm"]]
     calls = [c for r in reports for c in r["llm"]]
     posts = [p for t in fake.threads.values() for p in t.posts]
@@ -330,29 +329,26 @@ def summary_md(
     dropped = Counter(reason(d) for r in reports for d in r["dropped"])
     told = [r for r in rounds if r["receipts"]]
 
-    def credits(dearer: bool) -> float:
+    def cost(dearer: bool) -> float:
+        """As the plugin would have paid, at the hours the messages came, or all at night. With
+        nothing cached: ECNU keeps it about five minutes, and live rounds are mostly further
+        apart than that, unlike replay's."""
         total = 0.0
         for r in rounds:
-            hour = datetime.fromtimestamp(r["times"][0]).hour
-            factor = 2 if dearer and hour in DEARER_HOURS else 1
-            for c in r["llm"]:
-                total += factor * (
-                    c["input_tokens"] * CREDITS_IN + c["output_tokens"] * CREDITS_OUT
-                )
-        return round(total / 1e6, 1)
+            hour = datetime.fromtimestamp(r["times"][0]).hour if dearer else 0
+            total += sum(credits(c["input_tokens"], c["output_tokens"], hour) for c in r["llm"])
+        return round(total, 1)
 
     rows = [
         ("有效消息（去掉表情、命令和 bot 的）", kept),
         ("轮次", len(rounds)),
-        ("问过 OneJev 的轮次", len(screened)),
         ("交给大模型的轮次", len(organized)),
         ("大模型调用", len(calls)),
         ("输入 token", sum(c["input_tokens"] for c in calls)),
         ("输出 token", sum(c["output_tokens"] for c in calls)),
-        ("OneJev 耗时（秒）", round(sum(r.get("onejev_seconds", 0) for r in rounds))),
         ("大模型耗时（秒）", round(sum(c["seconds"] for c in calls))),
-        ("ECNU 积分（原价）", credits(False)),
-        ("ECNU 积分（8–18 点翻倍）", credits(True)),
+        ("ECNU 积分（原价）", cost(False)),
+        ("ECNU 积分（8–18 点翻倍）", cost(True)),
         ("新帖", len(fake.threads)),
         ("回复", sum(p.floor > 1 for p in posts) - sum(again.values())),
         ("更新", sum(len(p.revisions) for p in posts)),
@@ -373,20 +369,11 @@ def summary_md(
     lines += ["", "## 丢掉的项", "", "| 原因 | 次数 |", "| --- | --- |"]
     lines += [f"| {r} | {n} |" for r, n in dropped.most_common()]
     lines += ["", "## 疑似重复的帖子", ""] + suspects(fake, shown, tuning.follow_messages)
-    if table:
-        lines += [
-            "",
-            "## 门槛（第 5.1 节）",
-            "",
-            "| 门槛 | 漏掉的 | 放过去的 |",
-            "| --- | --- | --- |",
-        ]
-        wanted = [r for r in screened if r["done"]]
-        for step in range(1, 10):
-            t = step / 10
-            missed = sum(max(r["scores"].values()) < t for r in wanted) / max(1, len(wanted))
-            passed = sum(max(r["scores"].values()) >= t for r in screened) / max(1, len(screened))
-            lines.append(f"| {t:.1f} | {missed:.0%} | {passed:.0%} |")
+    lines += [
+        "",
+        f"这次跑实际花了 {cache.spent:.1f} 积分（按跑的时候的价格），"
+        f"{cache.hits} 次调用是之前跑过的，从 llm-cache.jsonl 里拿，没花钱。",
+    ]
     return "\n".join(lines) + "\n"
 
 
@@ -458,8 +445,6 @@ def main() -> None:
         "--until", help="到这天为止，含这天（YYYY-MM-DD），或者到这一刻（YYYY-MM-DD HH:MM）"
     )
     parser.add_argument("--rounds", type=int, help="跑满这么多轮就停，先小范围试时用")
-    parser.add_argument("--threshold", type=float, help="OneJev 的门槛；0 时每轮都交给大模型")
-    parser.add_argument("--no-onejev", action="store_true", help="不问 OneJev，每轮都交给大模型")
     asyncio.run(replay(parser.parse_args()))
 
 
