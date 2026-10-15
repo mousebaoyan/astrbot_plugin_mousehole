@@ -23,16 +23,24 @@ class QQ:
         self.sending = asyncio.Lock()
         self.next_at = 0.0
 
-    def platform(self) -> Any:
+    def found(self) -> list[Any]:
         found = [p for p in self.manager.get_insts() if p.meta().name == "aiocqhttp"]
         if self.platform_id:
             found = [p for p in found if p.meta().id == self.platform_id]
+        return found
+
+    def platform(self) -> Any:
+        found = self.found()
         if len(found) != 1:
             raise RuntimeError(f"expected one aiocqhttp platform, found {len(found)}")
         return found[0]
 
     async def call(self, action: str, **params: Any) -> Any:
         return await self.platform().bot.call_action(action, **params)
+
+    async def reply(self, event: dict[str, Any], text: str) -> None:
+        """To the chat a message came from, the group or the private one."""
+        await self.platform().bot.send(event, text)
 
     async def online(self) -> bool:
         return (await self.call("get_status"))["online"]

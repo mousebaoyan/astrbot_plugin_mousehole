@@ -79,6 +79,10 @@ class Mousehole(Star):
             index=index,
         )
         self.tasks = [asyncio.create_task(self.start(index))]
+        # When AstrBot starts, plugins load before the platforms; installed or reloaded later,
+        # the platform is already there.
+        if self.qq.found():
+            self.listen()
 
     async def start(self, index: Index | None) -> None:
         # Groups are known before any event or message is acted on.
@@ -90,7 +94,29 @@ class Mousehole(Star):
             await index.load()
             self.tasks.append(asyncio.create_task(self.archive.run()))
 
+    @filter.on_platform_loaded()
+    async def on_platform_loaded(self):
+        if self.forum and self.qq.found():
+            self.listen()
+
+    def listen(self) -> None:
+        # AstrBot's session allowlist runs before any plugin and would drop the private messages
+        # of members not on it, so these come straight from aiocqhttp.
+        if self.config["login"]:
+            self.qq.platform().bot.subscribe("message.private", self.on_private)
+
+    async def on_private(self, raw: dict) -> None:
+        text = plain(raw["message"])
+        if not wants_login(text):
+            return
+        try:
+            await self.qq.reply(raw, await login(self.forum, raw["user_id"], text))
+        except Exception:
+            logger.exception("Replying to a private login failed")
+
     async def terminate(self) -> None:
+        if self.forum and self.qq.found():
+            self.qq.platform().bot.unsubscribe("message.private", self.on_private)
         for task in self.tasks:
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
@@ -107,9 +133,8 @@ class Mousehole(Star):
         if raw["post_type"] == "notice":
             await self.on_notice(raw)
         elif raw["post_type"] == "message" and raw["message_type"] == "private":
-            text = plain(raw["message"])
-            if self.config["login"] and wants_login(text):
-                await event.send(event.plain_result(await login(self.forum, raw["user_id"], text)))
+            # Answered in on_private; here only kept from AstrBot's chat model.
+            if self.config["login"] and wants_login(plain(raw["message"])):
                 event.stop_event()
         elif raw["post_type"] == "message" and raw["group_id"] in self.sync.groups:
             group = raw["group_id"]
@@ -121,8 +146,8 @@ class Mousehole(Star):
                 for s in raw["message"]
             )
             if self.config["login"] and at_bot and plain(raw["message"]).strip().startswith("登录"):
-                await event.send(event.plain_result("登录请私聊我"))
                 event.stop_event()
+                await self.qq.reply(raw, "登录请私聊我")
 
     async def on_notice(self, raw: dict) -> None:
         if raw["notice_type"] != "group_recall":
