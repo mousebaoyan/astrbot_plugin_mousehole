@@ -3,6 +3,7 @@ through AstrBot's providers, which drop per-request options such as the response
 thinking (design §3). Replay uses these same clients with the same settings."""
 
 import asyncio
+import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -40,9 +41,8 @@ class Settings:
     reasoning_effort: str = "low"
     temperature: float = 0.2
     max_tokens: int = 16384
-    # Long enough for max_tokens at ECNU's 20 or so a second: a call cut off may be charged all
-    # the same.
-    timeout_seconds: int = 900
+    # How long nothing may come: answers stream, however long they take.
+    timeout_seconds: int = 120
     # 0 for no limit.
     tokens_per_day: int = 0
 
@@ -82,6 +82,10 @@ class LLM:
                 {"role": "user", "content": prompt},
             ],
             "max_tokens": s.max_tokens,
+            # Streamed, so a long answer is never cut off by the timeout: at ECNU's 20 or so tokens
+            # a second one may take minutes, and a call cut off is charged all the same.
+            "stream": True,
+            "stream_options": {"include_usage": True},
         }
         if s.structured_output == "json_schema" and schema:
             body["response_format"] = {"type": "json_schema", "json_schema": schema}
@@ -109,17 +113,31 @@ class LLM:
             raise BudgetExhausted(f"{self.spent} tokens today")
         body = self.body(system, prompt, schema)
         for _ in range(BUSY_TRIES):
-            res = await self.http.post("/chat/completions", json=body)
+            async with self.http.stream("POST", "/chat/completions", json=body) as res:
+                if res.status_code == 200:
+                    answer, usage = await read(res)
+                    break
+                text = (await res.aread()).decode(errors="replace")
             if res.status_code != 429:
-                break
+                raise LLMError(f"HTTP {res.status_code}: {text[:200]}")
             await self.sleep(BUSY_WAIT)
-        if res.status_code != 200:
-            raise LLMError(f"HTTP {res.status_code}: {res.text[:200]}")
-        data = res.json()
-        usage = data.get("usage") or {}
+        else:
+            raise LLMError(f"HTTP 429 for {BUSY_WAIT * BUSY_TRIES} seconds")
         tokens = usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
         self.spent += sum(tokens)
-        return data["choices"][0]["message"]["content"], *tokens
+        return answer, *tokens
+
+
+async def read(res: httpx.Response) -> tuple[str, dict]:
+    """A streamed answer and its usage, which comes with the last chunk."""
+    parts, usage = [], {}
+    async for line in res.aiter_lines():
+        if not line.startswith("data: ") or line == "data: [DONE]":
+            continue
+        chunk = json.loads(line.removeprefix("data: "))
+        usage = chunk.get("usage") or usage
+        parts += [c["delta"].get("content") or "" for c in chunk["choices"]]
+    return "".join(parts), usage
 
 
 class Embedder:

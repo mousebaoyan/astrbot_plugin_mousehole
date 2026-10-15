@@ -16,7 +16,7 @@ import httpx
 
 from mousehole import judge
 from mousehole.archive import Archive, Message, Tuning
-from mousehole.llm import LLM, Embedder, Settings
+from mousehole.llm import LLM, Embedder, Settings, read
 from mousehole.similar import Index
 from tools.fake_forum import FakeForum, Thread, bigrams
 
@@ -120,7 +120,7 @@ class Cached(httpx.AsyncBaseTransport):
             if res.status_code != 200:
                 return httpx.Response(res.status_code, content=content)
             self.answers[key] = content.decode()
-            usage = json.loads(content)["usage"]
+            _, usage = await read(httpx.Response(200, content=content))
             cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
             hour = datetime.now().hour
             self.spent += credits(usage["prompt_tokens"], usage["completion_tokens"], hour, cached)

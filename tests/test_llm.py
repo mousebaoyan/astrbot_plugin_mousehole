@@ -17,10 +17,14 @@ def answering(*statuses):
         sent.append(json.loads(request.content))
         if left:
             return httpx.Response(left.pop(0), text="busy")
-        usage = {"prompt_tokens": 600, "completion_tokens": 400}
-        return httpx.Response(
-            200, json={"choices": [{"message": {"content": '{"same": null}'}}], "usage": usage}
-        )
+        chunks = [
+            {"choices": [{"delta": {"reasoning_content": "想想"}}]},
+            {"choices": [{"delta": {"content": '{"same"'}}]},
+            {"choices": [{"delta": {"content": ": null}"}}]},
+            {"choices": [], "usage": {"prompt_tokens": 600, "completion_tokens": 400}},
+        ]
+        lines = [f"data: {json.dumps(c)}\n\n" for c in chunks] + ["data: [DONE]\n\n"]
+        return httpx.Response(200, text="".join(lines))
 
     return httpx.MockTransport(handle), sent
 
@@ -60,7 +64,7 @@ async def test_requests_carry_the_chosen_options(change, expected, absent):
     (body,) = sent
     assert body.items() >= expected.items()
     assert not set(absent) & set(body)
-    assert (body["model"], body["max_tokens"]) == ("ecnu-plus", 16384)
+    assert (body["model"], body["max_tokens"], body["stream"]) == ("ecnu-plus", 16384, True)
 
 
 async def test_too_many_requests_at_once_wait_their_turn():
