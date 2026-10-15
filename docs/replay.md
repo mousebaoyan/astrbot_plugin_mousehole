@@ -97,7 +97,7 @@ uv run python -m tools.replay data/export.json --config data/config.json --board
 | --- | --- |
 | `--boards FILE` | 版块和标签：`{"boards": [{"slug", "name", "description"}], "tags": [{"name", "kind"}]}`，字段同论坛 `GET /boards`、`GET /tags` 的返回；不给就是自由分类（第 6 节） |
 | `--out DIR` | 结果放在哪 |
-| `--from`、`--until` | 只跑这段时间的消息，`YYYY-MM-DD`，都含当天 |
+| `--from`、`--until` | 只跑这段时间的消息，`YYYY-MM-DD`，都含当天；`--from` 也可以是 `YYYY-MM-DD HH:MM`，从那一刻开始，配合 `--rounds` 挑一段白天的消息试 |
 | `--config FILE` | 插件的配置文件，见上 |
 | `--rounds N` | 跑满 N 轮就停，照常写出结果；换了提示词或门槛，先跑几轮看效果和花费 |
 | `--threshold X` | OneJev 的门槛，不给用配置里的；给 0 就每一轮都交给大模型，同时记下 OneJev 的分数（第 5.1 节） |

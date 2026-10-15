@@ -120,15 +120,16 @@ class Passing:
 # ---- The run
 
 
-def day(value: str) -> float:
-    return datetime.strptime(value, "%Y-%m-%d").timestamp()
+def moment(value: str) -> float:
+    """`YYYY-MM-DD` for the start of the day, or `YYYY-MM-DD HH:MM`."""
+    return datetime.fromisoformat(value).timestamp()
 
 
 async def replay(args: argparse.Namespace) -> None:
     export = json.loads(Path(args.export).read_text(encoding="utf-8"))
     group, bot, messages = convert(export)
-    start = day(args.start) if args.start else float("-inf")
-    end = day(args.until) + 86400 if args.until else float("inf")
+    start = moment(args.start) if args.start else float("-inf")
+    end = moment(args.until) + 86400 if args.until else float("inf")
     messages = [m for m in messages if start <= m[0].time < end]
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -373,7 +374,9 @@ def main() -> None:
     )
     parser.add_argument("--out", required=True, help="结果放在哪个目录")
     parser.add_argument("--boards", help="版块和标签的 JSON；不给就是自由分类")
-    parser.add_argument("--from", dest="start", help="从这天开始（YYYY-MM-DD）")
+    parser.add_argument(
+        "--from", dest="start", help="从这天开始（YYYY-MM-DD），或者从这一刻（YYYY-MM-DD HH:MM）"
+    )
     parser.add_argument("--until", help="到这天为止，含这天（YYYY-MM-DD）")
     parser.add_argument("--rounds", type=int, help="跑满这么多轮就停，先小范围试时用")
     parser.add_argument("--threshold", type=float, help="OneJev 的门槛；0 时每轮都交给大模型")
