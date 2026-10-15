@@ -196,8 +196,17 @@ async def replay(args: argparse.Namespace) -> None:
     rounds_file = out / "rounds.jsonl"
     rounds_file.write_text("", encoding="utf-8")
 
+    shown = {m.id: (m, name, text) for m, name, text in messages}
+
     def enough() -> bool:
         return args.rounds is not None and len(reports) >= args.rounds
+
+    def write() -> None:
+        """What the rounds so far came to: written after each, to read while a run goes on."""
+        (out / "threads.md").write_text(threads_md(fake, shown, reports), encoding="utf-8")
+        kept = sum(chat.count for chat in archive.chats.values())
+        summary = summary_md(fake, shown, kept, reports, tuning, args.threshold == 0)
+        (out / "summary.md").write_text(summary, encoding="utf-8")
 
     async def drain() -> None:
         while not archive.queue.empty() and not enough():
@@ -210,6 +219,7 @@ async def replay(args: argparse.Namespace) -> None:
             reports.append(report)
             with rounds_file.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(report, ensure_ascii=False) + "\n")
+            write()
             print(
                 f"round {len(reports)}: #{report['numbers'][0]}–#{report['numbers'][1]}"
                 f" scores={report['scores']} done={len(report['done'])}"
@@ -229,11 +239,7 @@ async def replay(args: argparse.Namespace) -> None:
         archive.tick(float("inf"))
         await drain()
 
-    shown = {m.id: (m, name, text) for m, name, text in messages}
-    (out / "threads.md").write_text(threads_md(fake, shown, reports), encoding="utf-8")
-    kept = sum(chat.count for chat in archive.chats.values())
-    summary = summary_md(fake, shown, kept, reports, tuning, args.threshold == 0)
-    (out / "summary.md").write_text(summary, encoding="utf-8")
+    write()
     if not args.boards:
         categories = await categories_md(fake, llm)
         (out / "categories.md").write_text(categories, encoding="utf-8")
