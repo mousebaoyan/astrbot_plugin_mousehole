@@ -18,7 +18,7 @@ QUESTION = {
 }
 ANSWER = {
     "ref": "N2",
-    "type": "answer",
+    "type": "reply",
     "question": "N1",
     "messages": [3],
     "body": "看学校，有些报了不好撤回。",
@@ -146,6 +146,7 @@ async def test_a_question_some_older_thread_asks_goes_there(setup):
         "/threads",
         body={
             "board": "qa",
+            "kind": "question",
             "title": "预推免第一批第二批",
             "tags": [],
             "content": {"onebot": [{"type": "text", "data": {"text": "能都报吗"}}]},
@@ -192,6 +193,7 @@ async def test_a_quote_of_a_message_no_longer_kept_fetches_its_thread_to_go_by(s
         "/threads",
         body={
             "board": "qa",
+            "kind": "question",
             "title": "很早以前的问题",
             "tags": [],
             "content": {"onebot": [{"type": "text", "data": {"text": "早先的正文"}}]},
@@ -236,6 +238,7 @@ async def test_a_recalled_message_no_longer_kept_deletes_the_floor_it_became(set
         "/threads",
         body={
             "board": "qa",
+            "kind": "question",
             "title": "很早以前的问题",
             "tags": [],
             "content": {"onebot": [{"type": "text", "data": {"text": "正文"}}]},
@@ -246,3 +249,118 @@ async def test_a_recalled_message_no_longer_kept_deletes_the_floor_it_became(set
     s.archive.recall(GROUP, 7, ASKER)
     await s.archive.handle(s.archive.queue.get_nowait())
     assert s.forum.threads[thread["id"]].deleted
+
+
+# The test embedder finds every thread alike, so each new one is checked against those there.
+NOT_SEEN = {"same": None}
+
+
+def texts(segments):
+    return "".join(
+        s["data"]["text"] if s["type"] == "text" else f"@{s['data']['qq']}" for s in segments
+    )
+
+
+async def test_a_discussion_becomes_a_thread_of_whoever_started_it(setup):
+    started = {**QUESTION, "type": "discussion", "messages": [1], "title": "今年夏令营机试改了题型"}
+    reply = {**ANSWER, "messages": [2]}
+    s = setup(Script({"new": [started, reply], "edit": []}))
+    await s.round(
+        message(1, ASKER, "听说今年机试改成项目题了"), message(2, ANSWERER, "我们学校也是")
+    )
+    t = thread_of(s)
+    assert (t.kind, t.author, [p.author for p in t.posts]) == (
+        "discussion",
+        ASKER,
+        [ASKER, ANSWERER],
+    )
+    [(group, segments)] = s.sent
+    assert group == GROUP
+    assert texts(segments) == (
+        f"@{ASKER} 这个讨论收录到鼠洞了：今年夏令营机试改了题型\nhttps://forum.test/t/{t.id}"
+    )
+
+
+async def test_a_round_sends_one_receipt_naming_each_new_thread_and_question_asked_before(setup):
+    again = {**QUESTION, "ref": "N1", "messages": [4], "same_as": "Q1"}
+    other = {**QUESTION, "ref": "N2", "messages": [5], "title": "夏令营要带简历吗", "same_as": None}
+    s = await asked(setup, {"new": [again, other], "edit": []}, NOT_SEEN)
+    first = thread_of(s)
+    await s.round(
+        message(4, OTHER, "预推免两批可以都报吗"), message(5, ANSWERER, "夏令营要带简历吗")
+    )
+    assert [p.author for p in first.posts] == [ASKER, ANSWERER, OTHER]
+    second = max(s.forum.threads)
+    _, segments = s.sent[-1]
+    assert texts(segments) == (
+        f"@{OTHER} 这个问题鼠洞上有人问过，已经有 1 条回复：{QUESTION['title']}\n"
+        f"https://forum.test/t/{first.id}\n"
+        f"@{ANSWERER} 你的问题收录到鼠洞了：夏令营要带简历吗\nhttps://forum.test/t/{second}"
+    )
+    assert len(s.sent) == 2
+
+
+async def test_receipts_stop_for_the_hour_after_four_and_threads_are_archived_still(setup):
+    def round_of(i):
+        return {"new": [{**QUESTION, "messages": [i], "title": f"第 {i} 个问题来了"}], "edit": []}
+
+    later = [answer for i in range(2, 7) for answer in (round_of(i), NOT_SEEN)]
+    s = setup(Script(round_of(1), *later))
+    for i in range(1, 6):
+        s.now = i * 60
+        report = await s.round(message(i, ASKER, f"问题 {i}"))
+    assert (len(s.forum.threads), len(s.sent)) == (5, 4)
+    assert report["dropped"] == ["receipt: 4 sent this hour"]
+    s.now = 3600 + 61
+    await s.round(message(6, ASKER, "问题 6"))
+    assert len(s.sent) == 5
+
+
+async def test_a_question_asked_in_a_thread_since_locked_or_deleted_gets_its_own(setup):
+    again = {**QUESTION, "messages": [4], "same_as": "Q1"}
+    # Q2 is the thread the first asking again got.
+    again_later = {**again, "messages": [5], "same_as": "Q2"}
+    s = await asked(setup, {"new": [again], "edit": []}, {"new": [again_later], "edit": []})
+    first = thread_of(s)
+    first.locked = True
+    await s.round(message(4, OTHER, "预推免两批可以都报吗"))
+    assert len(s.forum.threads) == 2
+    newer = s.forum.threads[max(s.forum.threads)]
+    newer.deleted = True
+    await s.round(message(5, OTHER, "预推免两批真的都能报吗"))
+    assert len(s.forum.threads) == 3
+
+
+async def test_new_tags_are_made_once_and_only_so_many_a_day(setup):
+    def item(i, *names):
+        new = [{"name": n, "kind": "school"} for n in names]
+        return {
+            **QUESTION,
+            "ref": f"N{i}",
+            "messages": [i],
+            "title": f"第 {i} 个问题来了",
+            "tags": list(names),
+            "new_tags": new,
+        }
+
+    names = [f"学校{i}" for i in range(10)]
+    s = setup(
+        Script(
+            {"new": [item(1, "华东师大", "预推免")], "edit": []},
+            {"new": [item(2, *names[:5]), item(3, *names[5:9])], "edit": []},
+            NOT_SEEN,
+            NOT_SEEN,
+            {"new": [item(4, names[9])], "edit": []},
+            NOT_SEEN,
+        )
+    )
+    await s.round(message(1, ASKER, "华东师大预推免"))
+    assert thread_of(s).tags == ["华东师大", "预推免"]
+    # The test forum knows 夏令营 and 预推免 to begin with.
+    assert s.forum.tags.count("华东师大") == 1
+
+    await s.round(message(2, ASKER, "a"), message(3, ASKER, "b"))
+    report = await s.round(message(4, OTHER, "c"))
+    assert len(s.forum.tags) == 2 + 10
+    assert s.forum.threads[max(s.forum.threads)].tags == []
+    assert report["dropped"] == ["tag 学校9: 10 made today already"]

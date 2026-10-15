@@ -52,7 +52,7 @@ def test_titles_are_cut_and_unknown_tags_dropped():
 
 def test_a_message_goes_into_one_floor_only():
     numbers = numbered(message(1, 1, "a"))
-    answer = {"ref": "N2", "type": "answer", "question": "N1", "messages": [1], "body": "x"}
+    answer = {"ref": "N2", "type": "reply", "question": "N1", "messages": [1], "body": "x"}
     plan = check({"new": [QUESTION, answer]}, numbers)
     assert (len(plan.questions), plan.answers) == (1, [])
     assert plan.dropped == ["new N2: #1 is archived already"]
@@ -73,3 +73,16 @@ def test_json_is_found_in_what_the_model_wraps_it_in():
     assert judge.extract_json('好的：\n```json\n{"new": []}\n```') == {"new": []}
     with pytest.raises(ValueError):
         judge.extract_json("没有要收的")
+
+
+def test_new_tags_must_be_short_of_a_known_kind_and_not_had_already():
+    new_tags = [
+        {"name": "华东师范大学", "kind": "school"},
+        {"name": "夏令营", "kind": "topic"},
+        {"name": "一个特别特别长的标签名字", "kind": "topic"},
+        {"name": "推免", "kind": "nope"},
+    ]
+    tags = ["华东师范大学", "夏令营", "一个特别特别长的标签名字", "推免", "没说要建的"]
+    raw = {"new": [{**QUESTION, "tags": tags, "new_tags": new_tags}], "edit": []}
+    [item] = check(raw, numbered(message(1, 1, "问"))).questions
+    assert (item.tags, item.new_tags) == (["华东师范大学", "夏令营"], [("华东师范大学", "school")])

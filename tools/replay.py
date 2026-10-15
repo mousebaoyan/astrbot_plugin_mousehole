@@ -24,10 +24,15 @@ from tools.fake_forum import FakeForum, Thread, bigrams
 FREE_BOARD = {
     "slug": "free",
     "name": "未分类",
-    "description": "所有问题都选这个",
+    "description": "所有帖子都选这个",
     "post_role": "user",
 }
-CATEGORIZE = """给论坛上的这个提问写一个类别和几个标签，用来设计论坛的版块和标签。
+# ECNU's credits per million tokens of ecnu-plus, doubled from 8 to 18 o'clock.
+CREDITS_IN, CREDITS_OUT = 100, 400
+DEARER_HOURS = range(8, 18)
+SITE = "https://bbs.mousebaoyan.cn"
+
+CATEGORIZE = """给论坛上的这个帖子（提问或讨论）写一个类别和几个标签，用来设计论坛的版块和标签。
 - category：不超过 6 个字，说明它属于哪类问题，比如“夏令营”“导师联系”“选校定位”。
 - tags：最多 5 个，可以是话题、院校或方向。
 只输出一个 JSON 对象：{"category": "……", "tags": ["……"]}"""
@@ -162,6 +167,9 @@ async def replay(args: argparse.Namespace) -> None:
     async def unreachable(seconds: float) -> None:
         sys.exit("OneJev can't be reached")
 
+    async def nowhere(group: int, segments: list[dict]) -> None:
+        pass
+
     index = Index(forum, embedder.embed, e["model"], None, e["min_similarity"])
     archive = Archive(
         forum,
@@ -169,6 +177,9 @@ async def replay(args: argparse.Namespace) -> None:
         llm.complete,
         index,
         prefixes=["/"],
+        site=SITE,
+        # Sent nowhere: each round's report says what went.
+        notify=nowhere,
         tuning=tuning,
         sleep=unreachable,
         clock=lambda: now,
@@ -227,12 +238,20 @@ def clock(t: float) -> str:
 
 def threads_md(fake: FakeForum, shown: dict, reports: list[dict]) -> str:
     again = {a["post"]: a["how"] for r in reports for a in r.get("asked_again", [])}
+    names = {m.user: name for m, name, _ in shown.values()}
+    receipts = defaultdict(list)
+    for r in reports:
+        for x in r.get("receipts", []):
+            sent = "发了" if r["receipt_sent"] else "超过每小时的上限，没发"
+            receipts[x["thread"]].append(f"@{names[x['user']]}（{sent}）")
     lines = ["# 本来会发的帖子", ""]
     for n, t in enumerate(sorted(fake.threads.values(), key=lambda t: t.created_at), 1):
         state = "（已删除）" if t.deleted else ""
+        kind = "讨论" if t.kind == "discussion" else "问答"
         lines += [
             f"## {n}. {t.title}{state}",
-            f"版块 {t.board}，标签 {'、'.join(t.tags) or '无'}",
+            f"{kind}，版块 {t.board}，标签 {'、'.join(t.tags) or '无'}",
+            f"回执：{'、'.join(receipts[t.id]) or '无'}",
             "",
         ]
         for p in t.posts:
@@ -268,13 +287,28 @@ def summary_md(
     fake: FakeForum, shown: dict, kept: int, reports: list[dict], tuning: Tuning, table: bool
 ) -> str:
     rounds = [r for r in reports if "numbers" in r]
-    days = max(1, len({datetime.fromtimestamp(m.time).date() for m, _, _ in shown.values()}))
+    # The stretch the rounds cover, so a run of a few rounds isn't taken for a day.
+    span = (rounds[-1]["times"][1] - rounds[0]["times"][0]) / 86400 if rounds else 0
+    days = max(span, 1 / 24)
     screened = [r for r in rounds if r["scores"] is not None]
     organized = [r for r in rounds if r["llm"]]
     calls = [c for r in reports for c in r["llm"]]
     posts = [p for t in fake.threads.values() for p in t.posts]
     again = Counter(a["how"] for r in reports for a in r.get("asked_again", []))
     dropped = Counter(reason(d) for r in reports for d in r["dropped"])
+    told = [r for r in rounds if r["receipts"]]
+
+    def credits(dearer: bool) -> float:
+        total = 0.0
+        for r in rounds:
+            hour = datetime.fromtimestamp(r["times"][0]).hour
+            factor = 2 if dearer and hour in DEARER_HOURS else 1
+            for c in r["llm"]:
+                total += factor * (
+                    c["input_tokens"] * CREDITS_IN + c["output_tokens"] * CREDITS_OUT
+                )
+        return round(total / 1e6, 1)
+
     rows = [
         ("有效消息（去掉表情、命令和 bot 的）", kept),
         ("轮次", len(rounds)),
@@ -285,13 +319,24 @@ def summary_md(
         ("输出 token", sum(c["output_tokens"] for c in calls)),
         ("OneJev 耗时（秒）", round(sum(r.get("onejev_seconds", 0) for r in rounds))),
         ("大模型耗时（秒）", round(sum(c["seconds"] for c in calls))),
+        ("ECNU 积分（原价）", credits(False)),
+        ("ECNU 积分（8–18 点翻倍）", credits(True)),
         ("新帖", len(fake.threads)),
         ("回复", sum(p.floor > 1 for p in posts) - sum(again.values())),
         ("更新", sum(len(p.revisions) for p in posts)),
         ("same_as 并进旧帖", again["same_as"]),
         ("查重并进旧帖", again["search"]),
+        ("讨论帖", sum(t.kind == "discussion" for t in fake.threads.values())),
+        ("回执（条）", sum(r["receipt_sent"] for r in told)),
+        ("回执里 @ 的人次", sum(len(r["receipts"]) for r in told if r["receipt_sent"])),
+        ("超过每小时上限没发的回执", sum(not r["receipt_sent"] for r in told)),
     ]
-    lines = [f"# 回放结果（{days} 天）", "", "| 项 | 总数 | 每天 |", "| --- | --- | --- |"]
+    lines = [
+        f"# 回放结果（{days:.2f} 天的消息）",
+        "",
+        "| 项 | 总数 | 每天 |",
+        "| --- | --- | --- |",
+    ]
     lines += [f"| {name} | {value} | {round(value / days, 1)} |" for name, value in rows]
     lines += ["", "## 丢掉的项", "", "| 原因 | 次数 |", "| --- | --- |"]
     lines += [f"| {r} | {n} |" for r, n in dropped.most_common()]

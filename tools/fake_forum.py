@@ -34,12 +34,14 @@ class Post:
 class Thread:
     id: int
     board: str
+    kind: str
     title: str
     tags: list[str]
     author: int
     created_at: int
     posts: list[Post] = field(default_factory=list)
     deleted: bool = False
+    locked: bool = False
 
 
 def bigrams(text: str) -> set[str]:
@@ -98,12 +100,14 @@ class FakeForum:
         opening = t.posts[0].body
         return {
             "id": t.id,
+            "kind": t.kind,
             "title": t.title,
             "board": {"slug": board["slug"], "name": board["name"]},
             "tags": t.tags,
             "reply_count": sum(not p.deleted for p in t.posts[1:]),
             "floor_count": len(t.posts),
             "created_at": t.created_at,
+            "locked": t.locked,
             "excerpt": re.sub(r"!\[\]\([^)]*\)", "", opening)[:100],
         }
 
@@ -131,6 +135,11 @@ class FakeForum:
                 return ok({"items": self.boards})
             case "GET", ["tags"]:
                 return ok({"items": [{"name": t, "kind": "topic"} for t in self.tags]})
+            case "POST", ["tags"]:
+                if body["name"] in self.tags:
+                    return error(409, "tag_exists")
+                self.tags.append(body["name"])
+                return httpx.Response(201, json={"name": body["name"], "kind": body["kind"]})
             case "GET", ["threads"]:
                 live = [t for t in self.threads.values() if not t.deleted]
                 return ok({"items": [{"id": t.id} for t in live], "next_cursor": None})
@@ -231,7 +240,17 @@ class FakeForum:
             return conflict
         if len(body["title"]) < 4:
             return error(400, "invalid_request")
-        t = Thread(self.next_id(), body["board"], body["title"], body["tags"], user, self.now())
+        if any(tag not in self.tags for tag in body["tags"]):
+            return error(400, "invalid_request")
+        t = Thread(
+            self.next_id(),
+            body["board"],
+            body["kind"],
+            body["title"],
+            body["tags"],
+            user,
+            self.now(),
+        )
         self.threads[t.id] = t
         opening = Post(
             self.next_id(), t.id, 1, user, self.render(body["content"]), None, self.now()

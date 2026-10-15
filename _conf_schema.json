@@ -10,7 +10,7 @@
     "default": "",
     "secret": true,
     "obvious_hint": true,
-    "hint": "管理员在论坛后台的 bot 页创建，范围选 read、act、sync、auth、events。"
+    "hint": "管理员在论坛后台的 bot 页创建，范围选 read、act、sync、auth、events；自动收录要建标签，再加 moderate。"
   },
   "platform_id": {
     "description": "用哪个 aiocqhttp 接入",
@@ -68,6 +68,12 @@
         "type": "list",
         "default": [],
         "hint": "填群号；空的收录论坛上关联的所有群。"
+      },
+      "notify": {
+        "description": "收录后在群里 @ 发帖人",
+        "type": "bool",
+        "default": true,
+        "hint": "收录了新帖子，或者提问并进了论坛上已有的帖子时，在群里 @ 他并附上帖子链接，一轮合成一条，每个群每小时最多 4 条。关掉后照常收录，bot 不在群里说话。"
       },
       "round_messages": {
         "description": "一轮最多几条消息",

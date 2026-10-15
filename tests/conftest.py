@@ -69,9 +69,24 @@ class Setup:
         async def sleep(seconds: float) -> None:
             self.slept.append(seconds)
 
+        self.now = 0.0
+        # (group, segments) of each receipt sent.
+        self.sent: list[tuple[int, list[dict]]] = []
+
+        async def notify(group: int, segments: list[dict]) -> None:
+            self.sent.append((group, segments))
+
         self.index = Index(client, embed, "test", None)
         self.archive = Archive(
-            client, self.onejev, llm, self.index, prefixes=["/"], sleep=sleep, clock=lambda: 0
+            client,
+            self.onejev,
+            llm,
+            self.index,
+            prefixes=["/"],
+            site="https://forum.test",
+            notify=notify,
+            sleep=sleep,
+            clock=lambda: self.now,
         )
 
     async def round(self, *messages: Message) -> dict:

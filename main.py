@@ -66,6 +66,8 @@ class Mousehole(Star):
                 self.llm.complete,
                 index,
                 prefixes=self.context.get_config()["wake_prefix"],
+                site=c["forum_url"],
+                notify=self.qq.send_group if c["archive"]["notify"] else None,
                 tuning=Tuning.of(c),
             )
         lottery = c["lottery"]

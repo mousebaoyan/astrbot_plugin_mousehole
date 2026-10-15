@@ -22,6 +22,8 @@ log = logging.getLogger("astrbot.mousehole")
 
 # (system prompt, prompt, JSON schema) → (answer, input tokens, output tokens)
 Complete = Callable[[str, str, dict], Awaitable[tuple[str, int, int]]]
+# (group, OneBot message segments): sends to the group
+Notify = Callable[[int, list[dict]], Awaitable[None]]
 
 
 @dataclass
@@ -57,6 +59,10 @@ KEPT = 1000
 ONEJEV_RETRY = 60
 TICK = 10
 TAXONOMY_EVERY = 3600
+# Receipts in a group within an hour, beyond which a round's goes unsent (design §8.8): the bot
+# speaking up often is what gets an account taken for a robot.
+RECEIPTS_PER_HOUR = 4
+NEW_TAGS_PER_DAY = 10
 
 PLACEHOLDERS = {
     "file": "[文件]",
@@ -178,11 +184,17 @@ class Archive:
         index: Index,
         *,
         prefixes: list[str],
+        site: str,
+        notify: Notify | None = None,
         tuning: Tuning | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         clock: Callable[[], float] = time.time,
     ):
+        """`site` is the forum's address for links in receipts; without `notify` none are
+        sent."""
         self.forum = forum
+        self.site = site.rstrip("/")
+        self.notify = notify
         self.onejev = onejev
         self.complete = complete
         self.index = index
@@ -195,6 +207,11 @@ class Archive:
         self.boards: list[dict] = []
         self.tags: list[str] = []
         self.onejev_down = False
+        # When receipts went to each group in the last hour.
+        self.receipts_sent: dict[int, list[float]] = {}
+        # The day new tags are counted for, and how many were made on it.
+        self.tags_day = ""
+        self.tags_made = 0
 
     # ---- Taking messages in
 
@@ -357,6 +374,9 @@ class Archive:
             "dropped": [],
             # Questions posted as floors in threads that asked them before.
             "asked_again": [],
+            # Who to tell their thread was archived, and whether the receipt went.
+            "receipts": [],
+            "receipt_sent": False,
         }
         if not messages:
             return report
@@ -397,7 +417,22 @@ class Archive:
         touched = await self.carry_out(chat, plan, questions, floors, report)
         for q in touched | quoted:
             q.last = last
+        await self.send_receipts(chat, report)
         return report
+
+    async def send_receipts(self, chat: Chat, report: dict) -> None:
+        """One message for the round's new threads and questions asked before (design §8.8)."""
+        if not report["receipts"] or self.notify is None:
+            return
+        now = self.clock()
+        sent = [t for t in self.receipts_sent.get(chat.group, []) if now - t < 3600]
+        self.receipts_sent[chat.group] = sent
+        if len(sent) >= RECEIPTS_PER_HOUR:
+            report["dropped"].append(f"receipt: {RECEIPTS_PER_HOUR} sent this hour")
+            return
+        sent.append(now)
+        await self.notify(chat.group, receipt_message(report["receipts"], self.site))
+        report["receipt_sent"] = True
 
     async def follow_quotes(self, chat: Chat, messages: list[Message]) -> set[Question]:
         """Questions the round quotes archived messages of, followed again if they had lapsed.
@@ -580,11 +615,22 @@ class Archive:
         if same is None:
             same = await self.duplicate_of(chat, item, report)
             how = "search"
-        if same is not None:
+        older = await self.open_thread(same.floor.thread) if same is not None else None
+        if same is not None and older is not None:
             # Asked before: a floor in that thread, which later answers reply to.
             q = Question(same.title, opening=False, last=0)
             q.floor = await self.post_floor(chat, q, same.floor.thread, item.messages, item.body)
             report["asked_again"].append({"post": q.floor.post, "how": how})
+            report["receipts"].append(
+                {
+                    "user": author,
+                    "kind": item.kind,
+                    "thread": older["id"],
+                    "title": older["title"],
+                    "again": True,
+                    "replies": older["reply_count"],
+                }
+            )
         else:
             q = Question(item.title, opening=True, last=0)
             key = f"qq-{chat.group}-{item.messages[0].id}-thread"
@@ -594,9 +640,9 @@ class Archive:
                     "/threads",
                     body={
                         "board": item.board,
-                        "kind": "question",
+                        "kind": item.kind,
                         "title": item.title,
-                        "tags": item.tags,
+                        "tags": await self.make_tags(item, report),
                         "content": await self.content(author, item.messages, item.body),
                         "source": self.source(chat, item.messages),
                     },
@@ -607,10 +653,19 @@ class Archive:
                     "GET", f"/threads/{thread['id']}/posts", params={"after": 0}
                 )
                 opening = posts["items"][0]
+                report["receipts"].append(
+                    {
+                        "user": author,
+                        "kind": item.kind,
+                        "thread": thread["id"],
+                        "title": item.title,
+                        "again": False,
+                    }
+                )
             except ForumError as e:
                 if e.code != "source_exists":
                     raise
-                # Archived already, before the plugin restarted.
+                # Archived already, before the plugin restarted, and told then.
                 opening = await self.forum.call("GET", f"/posts/{e.details['post_id']}")
             q.floor = self.settle(q, opening, author, item.messages, item.body)
         chat.following.append(q)
@@ -619,6 +674,40 @@ class Archive:
             # round must find it already.
             await self.index.put(q.floor.thread, item.title, item.body)
         return q
+
+    async def open_thread(self, thread: int) -> dict | None:
+        """A thread that takes new floors; None when it was deleted or locked since, and the
+        question gets a thread of its own."""
+        try:
+            detail = await self.forum.call("GET", f"/threads/{thread}")
+        except ForumError as e:
+            if e.status != 404:
+                raise
+            return None
+        return None if detail["locked"] else detail
+
+    async def make_tags(self, item: judge.NewQuestion, report: dict) -> list[str]:
+        """The item's tags, the new ones made on the forum first while the day's allow."""
+        today = datetime.fromtimestamp(self.clock()).strftime("%Y-%m-%d")
+        if self.tags_day != today:
+            self.tags_day, self.tags_made = today, 0
+        tags = list(item.tags)
+        for name, kind in item.new_tags:
+            if name in self.tags:
+                continue
+            if self.tags_made >= NEW_TAGS_PER_DAY:
+                tags.remove(name)
+                report["dropped"].append(f"tag {name}: {NEW_TAGS_PER_DAY} made today already")
+                continue
+            try:
+                await self.forum.call("POST", "/tags", body={"name": name, "kind": kind})
+                self.tags_made += 1
+                report["done"].append(f"tag {name}")
+            except ForumError as e:
+                if e.code != "tag_exists":
+                    raise
+            self.tags.append(name)
+        return tags
 
     async def post_answer(
         self, chat: Chat, item: judge.NewAnswer, question: Question, reply_to: Floor | None
@@ -763,7 +852,7 @@ class Archive:
                 q.answers.remove(floor)
             return report
         lines = "\n".join(self.text(chat, x) for x in rest)
-        kind = "提问" if floor is q.floor else "回答"
+        kind = "主楼" if floor is q.floor else "回复"
         prompt = f"这一层是{kind}。剩下的消息：\n{lines}"
         answer = await self.ask(report, judge.REORGANIZE, prompt, judge.REORGANIZE_SCHEMA)
         try:
@@ -792,3 +881,24 @@ class Archive:
         if opening:
             self.index.remove(thread)
         report["done"].append(f"deleted {path}")
+
+
+def receipt_message(receipts: list[dict], site: str) -> list[dict]:
+    """The round's receipt (design §8.8): each new thread's writer, and each question asked
+    before, @ed with the thread."""
+    segments: list[dict] = []
+    for r in receipts:
+        discussion = r["kind"] == "discussion"
+        if not r["again"]:
+            said = "这个讨论收录到鼠洞了" if discussion else "你的问题收录到鼠洞了"
+        else:
+            said = "这个话题鼠洞上讨论过" if discussion else "这个问题鼠洞上有人问过"
+            if r["replies"]:
+                said += f"，已经有 {r['replies']} 条回复"
+        if segments:
+            segments.append({"type": "text", "data": {"text": "\n"}})
+        segments += [
+            {"type": "at", "data": {"qq": str(r["user"])}},
+            {"type": "text", "data": {"text": f" {said}：{r['title']}\n{site}/t/{r['thread']}"}},
+        ]
+    return segments

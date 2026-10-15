@@ -4,7 +4,7 @@
 
 ## 安装
 
-1. 在鼠洞后台的 bot 页创建 token，bot 的 QQ 号填机器人自己的，范围选 `read`、`act`、`sync`、`auth`、`events`；在后台关联要同步的群。
+1. 在鼠洞后台的 bot 页创建 token，bot 的 QQ 号填机器人自己的，范围选 `read`、`act`、`sync`、`auth`、`events`，要自动收录再加 `moderate`（建标签）；在后台关联要同步的群。
 2. 把这个仓库放进 AstrBot 的 `data/plugins/`，在插件配置里填论坛地址和 token。成员同步、私聊登录、个性签名、开奖结果默认都开着，可以分别关掉。
 3. 自动收录默认关着。先在插件配置里填好 [OneJev](https://github.com/OmniJev/OneJev)、大模型（默认 ECNU 的 `ecnu-plus`）和嵌入模型（bge-m3）的地址和密钥，用[回放](docs/replay.md)调好，再打开"自动收录"。
 

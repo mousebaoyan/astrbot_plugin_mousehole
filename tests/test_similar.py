@@ -17,6 +17,7 @@ async def post(forum, title, message):
         "/threads",
         body={
             "board": "qa",
+            "kind": "question",
             "title": title,
             "tags": [],
             "content": {"onebot": [{"type": "text", "data": {"text": "正文"}}]},
