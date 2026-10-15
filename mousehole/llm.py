@@ -37,7 +37,7 @@ class Settings:
     thinking: str = "enabled"
     reasoning_effort: str = "low"
     temperature: float = 0.2
-    max_tokens: int = 8192
+    max_tokens: int = 16384
     timeout_seconds: int = 300
     # 0 for no limit.
     tokens_per_day: int = 0

@@ -82,7 +82,7 @@ QQ 的风控会识别"像机器人"的账号，插件尽量让 bot 的操作和�
 | `llm.structured_output` | `json_schema` | `json_schema` 按插件给的格式约束输出；`json_object` 只要求是 JSON；`off` 不传 |
 | `llm.thinking`、`llm.reasoning_effort` | `enabled`、`low` | 思考模式和思考程度（ECNU 的 `thinking`、`reasoning_effort`）；`omit` 是不传，给不认这些参数的接口用 |
 | `llm.temperature` | 0.2 | 只在不思考时传 |
-| `llm.max_tokens`、`llm.timeout_seconds` | 8192、300 | 每次最多输出多少 token（含思考）、最多等几秒 |
+| `llm.max_tokens`、`llm.timeout_seconds` | 16384、300 | 每次最多输出多少 token（含思考）、最多等几秒 |
 | `llm.tokens_per_day` | 100 万 | 每天最多用多少 token，用完当天不再整理；0 不限 |
 | `embedding.base_url`、`embedding.api_key`、`embedding.model` | 本机 Ollama、空、`bge-m3` | 嵌入模型，OpenAI 兼容接口；换了地址或模型，向量索引重建 |
 | `embedding.min_similarity` | 0.5 | 语义相似的门槛（第 8.5 节） |
