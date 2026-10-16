@@ -77,3 +77,14 @@ async def test_an_export_is_archived_as_it_came_and_a_second_run_does_it_no_more
     # All done: the LLM, lined up with nothing, is not asked again.
     await run(Script())
     assert len(forum.threads) == 1
+
+
+async def test_what_came_after_until_is_left_to_the_plugin(tmp_path):
+    forum = FakeForum()
+    client = forum.client()
+    path, data = export(tmp_path), tmp_path / "data"
+    index = Index(client, embed, "test", None)
+    llm = Script({"new": [QUESTION, ANSWER], "edit": []})
+    await archive_exports(client, llm, index, [path], data, Tuning(), workers=1, until=EVENING)
+    assert len(forum.threads) == 1
+    assert len((data / "done.txt").read_text().split()) == 1

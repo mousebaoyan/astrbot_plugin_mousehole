@@ -144,6 +144,7 @@ async def history(args: argparse.Namespace) -> None:
         Tuning.of(config),
         args.workers,
         args.batches,
+        datetime.fromisoformat(args.until).timestamp() if args.until else float("inf"),
     )
     await forum.close()
     await llm.close()
@@ -159,9 +160,10 @@ async def archive_exports(
     tuning: Tuning,
     workers: int,
     most: int | None = None,
+    until: float = float("inf"),
 ) -> None:
-    """Each export's messages taken in and archived batch by batch, as the plugin would have,
-    `most` batches a worker at most."""
+    """Each export's messages from before `until` taken in and archived batch by batch, as the
+    plugin would have, `most` batches a worker at most."""
     stranded = [p for p in data.glob("worker-*/batch/*.jsonl") if int(p.parts[-3][7:]) >= workers]
     if stranded:
         raise SystemExit(f"{len(stranded)} batches are left by more workers than {workers}")
@@ -175,7 +177,7 @@ async def archive_exports(
         group, bot, messages = convert(json.loads(path.read_text(encoding="utf-8")))
         bots[group] = bot
         # Exports may overlap: each message once.
-        chats.setdefault(group, {}).update((m.id, m) for m, _, _ in messages)
+        chats.setdefault(group, {}).update((m.id, m) for m, _, _ in messages if m.time < until)
         for p in (path.parent / "resources" / "images").glob("*"):
             pictures[p.name.split("_")[0].lower()] = p
     work = [
@@ -256,6 +258,9 @@ def main() -> None:
     parser.add_argument("--data", required=True, help="进度和中间文件放在哪个目录")
     parser.add_argument("--workers", type=int, default=WORKERS, help="同时收几批，续跑时不要改")
     parser.add_argument("--batches", type=int, help="每个 worker 最多收这么多批，先小范围试时用")
+    parser.add_argument(
+        "--until", help="只收这一刻（YYYY-MM-DD HH:MM）之前的消息，之后的由插件的自动收录来收"
+    )
     parser.add_argument("--off-peak", action="store_true", help="避开 Step Plan 的高峰时段")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     # Not every request it makes.
