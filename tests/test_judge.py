@@ -79,10 +79,16 @@ def test_new_tags_must_be_short_of_a_known_kind_and_not_had_already():
     new_tags = [
         {"name": "华东师范大学", "kind": "school"},
         {"name": "夏令营", "kind": "topic"},
-        {"name": "一个特别特别长的标签名字", "kind": "topic"},
+        {"name": "一个特别特别特别特别特别特别特别长的标签名字", "kind": "topic"},
         {"name": "推免", "kind": "nope"},
     ]
-    tags = ["华东师范大学", "夏令营", "一个特别特别长的标签名字", "推免", "没说要建的"]
+    tags = [
+        "华东师范大学",
+        "夏令营",
+        "一个特别特别特别特别特别特别特别长的标签名字",
+        "推免",
+        "没说要建的",
+    ]
     raw = {"new": [{**QUESTION, "tags": tags, "new_tags": new_tags}], "edit": []}
     [item] = check(raw, numbered(message(1, 1, "问"))).questions
     assert (item.tags, item.new_tags) == (["华东师范大学", "夏令营"], [("华东师范大学", "school")])
