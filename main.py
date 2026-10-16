@@ -14,6 +14,7 @@ from .mousehole.llm import LLM, Embedder, Settings
 from .mousehole.login import login, wants_login
 from .mousehole.qq import QQ
 from .mousehole.similar import Index
+from .mousehole.suggest import Suggest
 from .mousehole.sync import Sync
 from .mousehole.weekly import Weekly
 
@@ -31,6 +32,7 @@ class Mousehole(Star):
         self.llm: LLM | None = None
         self.embedder: Embedder | None = None
         self.archive: Archive | None = None
+        self.suggest: Suggest | None = None
         self.tasks: list[asyncio.Task] = []
 
     async def initialize(self) -> None:
@@ -71,6 +73,15 @@ class Mousehole(Star):
                 history=self.history,
                 tuning=Tuning.of(c),
             )
+            if c["archive"]["suggest"]:
+                self.suggest = Suggest(
+                    self.forum,
+                    self.llm.complete,
+                    index,
+                    self.qq.send_group,
+                    site=c["forum_url"],
+                    prefixes=self.context.get_config()["wake_prefix"],
+                )
         lottery = c["lottery"]
         self.events = Events(
             self.forum,
@@ -115,6 +126,8 @@ class Mousehole(Star):
             self.tasks.append(asyncio.create_task(self.events.run()))
         if self.archive:
             self.tasks.append(asyncio.create_task(self.archive.run()))
+        if self.suggest:
+            self.tasks.append(asyncio.create_task(self.suggest.run()))
         if self.weekly:
             self.tasks.append(asyncio.create_task(self.weekly.run()))
 
@@ -179,6 +192,8 @@ class Mousehole(Star):
                 await self.qq.reply(raw, "登录请私聊我")
             # Last: copying its pictures to the forum takes a moment.
             if self.archives(group):
+                if self.suggest:
+                    self.suggest.add(group, Message.from_onebot(raw), raw["self_id"])
                 await self.archive.add(group, Message.from_onebot(raw), raw["self_id"])
 
     async def on_notice(self, raw: dict) -> None:

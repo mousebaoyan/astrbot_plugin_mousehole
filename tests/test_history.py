@@ -72,7 +72,7 @@ async def test_an_export_is_archived_as_it_came_and_a_second_run_does_it_no_more
     [thread] = forum.threads.values()
     opening, reply = thread.posts
     assert (thread.created_at, reply.created_at) == (MORNING, MORNING + 60)
-    assert opening.body.startswith("夏令营要准备什么？![](/uploads/")
+    assert opening.body.startswith("夏令营要准备什么？\n\n![](/uploads/")
     assert len((data / "done.txt").read_text().split()) == 2
     # All done: the LLM, lined up with nothing, is not asked again.
     await run(Script())

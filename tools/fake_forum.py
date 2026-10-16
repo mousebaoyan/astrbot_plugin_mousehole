@@ -107,6 +107,8 @@ class FakeForum:
             "id": t.id,
             "kind": t.kind,
             "title": t.title,
+            # Users' forum IDs are their QQ numbers here.
+            "author": {"id": t.author},
             "board": {"slug": board["slug"], "name": board["name"]},
             "tags": t.tags,
             "reply_count": sum(not p.deleted for p in t.posts[1:]),
@@ -198,6 +200,8 @@ class FakeForum:
                 p = self.posts[int(post)]
                 p.boosts[user] = body["body"]
                 return ok({"body": body["body"], "created_at": body.get("created_at")})
+            case "GET", ["users", user]:
+                return ok({"id": int(user.removeprefix("qq:"))})
             case "GET", ["bot", "messages", "group", group, message]:
                 post_id = self.links.get((int(group), int(message)))
                 if post_id is None:
@@ -229,6 +233,8 @@ class FakeForum:
     # ---- Writing
 
     def render(self, content: dict) -> str:
+        if "markdown" in content:
+            return content["markdown"]
         parts = []
         for s in content["onebot"]:
             if s["type"] == "text":

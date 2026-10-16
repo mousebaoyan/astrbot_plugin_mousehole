@@ -364,7 +364,7 @@ async def test_a_discussion_becomes_a_thread_of_whoever_started_it(setup):
     )
 
 
-async def test_the_summary_names_each_new_thread_and_question_asked_before(setup):
+async def test_the_summary_names_each_new_thread_but_not_questions_asked_before(setup):
     again = {**QUESTION, "ref": "N1", "messages": [4], "same_as": "Q1"}
     other = {**QUESTION, "ref": "N2", "messages": [5], "title": "夏令营要带简历吗", "same_as": None}
     s = await asked(setup, {"new": [again, other], "edit": []}, NOT_SEEN)
@@ -379,11 +379,10 @@ async def test_the_summary_names_each_new_thread_and_question_asked_before(setup
     second = max(s.forum.threads)
     [(group, segments)] = s.sent
     assert group == GROUP
+    # The one asked before was told as it was asked (猜你想问).
     assert texts(segments) == (
-        "鼠洞收录了群里的 3 个帖子：\n"
+        "鼠洞收录了群里的 2 个帖子：\n"
         f"@{ASKER} {QUESTION['title']}\nhttps://forum.test/t/{first.id}\n"
-        f"@{OTHER} 你问的鼠洞上有人问过，已经有 1 条回复：{QUESTION['title']}\n"
-        f"https://forum.test/t/{first.id}\n"
         f"@{ANSWERER} 夏令营要带简历吗\nhttps://forum.test/t/{second}"
     )
     await s.archive.send_summary()
@@ -391,7 +390,7 @@ async def test_the_summary_names_each_new_thread_and_question_asked_before(setup
 
 
 async def test_the_summary_waits_on_disk_and_names_ten_at_most(setup):
-    entry = {"user": ASKER, "kind": "question", "thread": 1, "title": "问题", "again": False}
+    entry = {"user": ASKER, "kind": "question", "thread": 1, "title": "问题"}
     s = setup(Script())
     s.archive.remember(GROUP, [entry] * 12)
 

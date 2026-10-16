@@ -186,10 +186,9 @@ def load(path: Path) -> list[Message]:
 
 
 def content(messages: list[Message], body: str) -> dict:
-    """The organized text, then the pictures in the messages, copied to the forum already."""
-    segments = [{"type": "text", "data": {"text": body}}]
-    segments += [{"type": "image", "data": {"url": u}} for m in messages for u in m.uploads]
-    return {"onebot": segments}
+    """The organized Markdown, then the pictures in the messages, copied to the forum already."""
+    pictures = [f"![]({u})" for m in messages for u in m.uploads]
+    return {"markdown": "\n\n".join([body, *pictures])}
 
 
 def write(path: Path, records: list[dict]) -> None:
@@ -817,17 +816,8 @@ class Archive:
             # Asked before: a floor in that thread, which later answers reply to.
             q = Question(same.title, opening=False, last=0)
             q.floor = await self.post_floor(chat, q, same.floor.thread, item.messages, item.body)
+            # Told as it was asked, by 猜你想问 (design §8.11), not again in the summary.
             report["asked_again"].append({"post": q.floor.post, "how": how})
-            report["summary"].append(
-                {
-                    "user": author,
-                    "kind": item.kind,
-                    "thread": older["id"],
-                    "title": older["title"],
-                    "again": True,
-                    "replies": older["reply_count"],
-                }
-            )
         else:
             q = Question(item.title, opening=True, last=0)
             key = f"qq-{chat.group}-{item.messages[0].id}-thread"
@@ -857,7 +847,6 @@ class Archive:
                         "kind": item.kind,
                         "thread": thread["id"],
                         "title": item.title,
-                        "again": False,
                     }
                 )
             except ForumError as e:
@@ -1039,22 +1028,14 @@ class Archive:
 
 
 def summary_message(entries: list[dict], site: str) -> list[dict]:
-    """The summary (design §8.8): each new thread's writer, and each question asked before, @ed
-    with the thread."""
+    """The summary (design §8.8): each new thread's writer @ed with the thread."""
 
     def text(value: str) -> dict:
         return {"type": "text", "data": {"text": value}}
 
     segments = [text(f"鼠洞收录了群里的 {len(entries)} 个帖子：")]
     for e in entries[:SUMMARY_ITEMS]:
-        discussion = e["kind"] == "discussion"
-        if not e["again"]:
-            said = f"（讨论）{e['title']}" if discussion else e["title"]
-        else:
-            said = "这个话题鼠洞上讨论过" if discussion else "你问的鼠洞上有人问过"
-            if e["replies"]:
-                said += f"，已经有 {e['replies']} 条回复"
-            said += f"：{e['title']}"
+        said = f"（讨论）{e['title']}" if e["kind"] == "discussion" else e["title"]
         user = {"type": "at", "data": {"qq": str(e["user"])}}
         segments += [text("\n"), user, text(f" {said}\n{site}/t/{e['thread']}")]
     if len(entries) > SUMMARY_ITEMS:

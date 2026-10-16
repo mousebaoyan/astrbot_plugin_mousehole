@@ -62,10 +62,25 @@ ORGANIZE = f"""你在帮一个保研交流 QQ 群整理论坛帖子。群里正�
 - 只用本人说过的内容，不加原文没有的信息，不替他下结论，人称和口气保持原样。学校、专业、数字、链接、缩写照抄。
 - 连句时只补标点和必要的连接，不增删表达判断的字词，比如"也""都""不""只""可能"。看不懂的网络用语和黑话原样保留，不要猜着改写。
 - 提问的人在回答别人追问时说的情况（比如 rank 前 10%），写进他的提问那一层（edit）。
-- 正文是纯文字，不用 Markdown，不写作者代号和 @。
+- 正文不写作者代号和 @。
 - 标题不超过 {TITLE_CHARS} 个字，像论坛的帖子标题：提问说清楚问的是什么，讨论概括讨论的是什么。提问的标题只用主楼里有的内容，不要把回复里才有的信息写进标题；也不要拔高，聊的是什么就写什么。标题用平实、中性的说法，不用原文里的粗话和玩笑。
 - 版块只从给的里选。
 - 标签最多 {MAX_TAGS} 个，先从已有的里选。没有合适的、又是以后会反复用到的院校、方向或话题，可以起新标签：写进 tags，同时在 new_tags 里写出名字和类别（topic 话题、school 院校、major 方向）。新标签不超过 {TAG_CHARS} 个字；院校用全称，比如“北京邮电大学”，不写“北邮”。和已有的标签意思相同的不要另起，比如已有“北京邮电大学”，群里说的“北邮”就用它。
+
+## 排版
+正文是 Markdown。排版只为了好读，不改意思，不加原文没有的话；一两句话的回复不用排版。
+- 几个并列的点、步骤、时间线，写成列表。
+- 关键的数字和结论，可以用 **加粗** 或 ==高亮== 标出来，一层最多一两处。
+- 本人特意提醒的注意事项、避坑的经验，可以放进提示块，例如：
+  > [!WARNING]
+  > 报了以后不好撤回
+  类型有 TIP（建议）、WARNING（注意）、NOTE（说明），不写标题。
+- 很长的经验、面经、清单，开头一两句说清楚，细节放进折叠块，标题用几个字说明里面是什么，例如：
+  > [!FOLD] 机试题目
+  > 第一题……
+- 几所学校、几个项目的同类数据放在一起比的，可以写成表格。
+- 本人说了"剧透""先别看"的内容，可以写成 ||藏起来的字||；公式写成 $x^2$，代码写成代码块。
+- 原文里的美元符号写成 \\$；不是要高亮、剧透的 == 和 ||，写成 \\=\\= 和 \\|\\|。
 
 ## 回应和短评
 群里对某一层（主楼或者任何一层回复）的表态，在论坛上就是给那一层点表情、留短评，要像论坛上的帖子一样都还原出来。
@@ -249,6 +264,85 @@ def duplicate_prompt(title: str, body: str, candidates: list[dict]) -> str:
             f"{t['excerpt']}"
         )
     return "\n\n".join(lines)
+
+
+# ---- 猜你想问 (design §8.11)
+
+SUGGEST_THREADS = 3
+
+SUGGEST = f"""你在帮一个保研交流 QQ 群。群友在群里提了问题，每个问题下面列着论坛上可能相关的帖子。判断哪些帖子能直接回答这个问题，bot 会把它们推给提问的人。
+
+- 能回答：帖子问的是同一件事，或者帖子里的回答正好回答了这个问题。说法不同没关系。
+- 不能：只是话题相近；问的是自己的具体情况（比如"我这个条件能去哪"），帖子说的是别人的；问的是今年的事，帖子说的是往年的。
+- 这条消息不是在提问（反问、玩笑、吐槽），或者离开前文就看不懂的，哪个帖子都不选。
+- 拿不准时当作不能。每个问题最多选 {SUGGEST_THREADS} 个，能回答得最好的在前。
+
+只输出一个 JSON 对象：{{"answers": [{{"question": "Q1", "threads": ["C2"]}}]}}，没有能回答的就是 {{"answers": []}}。"""
+
+SUGGEST_SCHEMA = {
+    "name": "suggestions",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "answers": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "question": {"type": "string"},
+                        "threads": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["question", "threads"],
+                    "additionalProperties": False,
+                },
+            }
+        },
+        "required": ["answers"],
+        "additionalProperties": False,
+    },
+}
+
+
+def suggest_prompt(asked: list[tuple[str, list[dict]]]) -> str:
+    """Each question asked, with the threads found for it."""
+    parts = []
+    for i, (text, threads) in enumerate(asked, 1):
+        lines = [f"# Q{i}\n{text}"]
+        for j, t in enumerate(threads, 1):
+            lines.append(
+                f"C{j}. {t['title']}（{t['board']['name']}，{t['created']}，"
+                f"{t['reply_count']} 条回复）\n{t['excerpt']}"
+            )
+        parts.append("\n\n".join(lines))
+    return "\n\n".join(parts)
+
+
+def suggestions(raw: Any, counts: list[int]) -> dict[int, list[int]]:
+    """For each question by index, the indexes of the threads the LLM found answer it; `counts`
+    is how many threads each question had."""
+    picked: dict[int, list[int]] = {}
+    items = raw.get("answers") if isinstance(raw, dict) else None
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        q = number_of(item.get("question"), "Q", len(counts))
+        if q is None:
+            continue
+        threads: list[int] = []
+        for c in item.get("threads") or []:
+            t = number_of(c, "C", counts[q])
+            if t is not None and t not in threads:
+                threads.append(t)
+        picked[q] = threads[:SUGGEST_THREADS]
+    return picked
+
+
+def number_of(name: Any, prefix: str, count: int) -> int | None:
+    """The index Q3 or C3 stands for, when there are `count` of them."""
+    if not isinstance(name, str) or not name.startswith(prefix) or not name[1:].isdigit():
+        return None
+    n = int(name[1:]) - 1
+    return n if 0 <= n < count else None
 
 
 def extract_json(text: str) -> Any:
