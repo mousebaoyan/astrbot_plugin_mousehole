@@ -182,6 +182,11 @@ async def replay(args: argparse.Namespace) -> None:
     e = config["embedding"]
     embedder = Embedder(e["base_url"], e["api_key"], e["model"])
     tuning = Tuning.of(config)
+    # Configs saved before the summary's wording was a setting lack it: the defaults fill in.
+    schema = json.loads(
+        (Path(__file__).parents[1] / "_conf_schema.json").read_text(encoding="utf-8")
+    )
+    wording = {k: v["default"] for k, v in schema["archive"]["items"].items()} | config["archive"]
 
     # Each summary that would have gone: (when, group, segments).
     sent: list[tuple[float, int, list[dict]]] = []
@@ -198,7 +203,7 @@ async def replay(args: argparse.Namespace) -> None:
         data=Path(data.name),
         prefixes=["/"],
         site=SITE,
-        templates=config["archive"],
+        templates=wording,
         notify=told,
         tuning=tuning,
         clock=lambda: now,
