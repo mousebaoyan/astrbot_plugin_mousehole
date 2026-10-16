@@ -1,6 +1,6 @@
 # 鼠洞插件 · 设计
 
-> 状态：成员同步、登录、个性签名和开奖已经在 AstrBot 上联调通过。自动收录（每天收两批、早上发汇总，第 8 节）用回放调好后，2026-10-16 在两个主群打开，正在观察上线后的效果。周榜图片和金徽章的祝贺（第 9 节）已写好，要先在 AstrBot 的 Python 环境里装好 Chromium（第 3 节）。第 8 节（自动收录）的分段大小、提示词和版块用历史记录调，见[回放实验](replay.md)。论坛要配合的改动列在第 11 节。论坛一侧见鼠洞仓库的[总体设计](https://github.com/mousebaoyan/mousehole/blob/main/docs/design.md)和[接口](https://github.com/mousebaoyan/mousehole/blob/main/docs/api.md)；本文只写插件自己的部分，接口细节以论坛的文档为准。
+> 状态：成员同步、登录、个性签名和开奖已经在 AstrBot 上联调通过。自动收录（每天收两批、早上发汇总，第 8 节）用回放调好后，2026-10-16 在两个主群打开，正在观察上线后的效果。周榜和金徽章的祝贺（第 9 节）2026-10-16 上线，周榜图片传进各群的群相册。第 8 节（自动收录）的分段大小、提示词和版块用历史记录调，见[回放实验](replay.md)。论坛要配合的改动列在第 11 节。论坛一侧见鼠洞仓库的[总体设计](https://github.com/mousebaoyan/mousehole/blob/main/docs/design.md)和[接口](https://github.com/mousebaoyan/mousehole/blob/main/docs/api.md)；本文只写插件自己的部分，接口细节以论坛的文档为准。
 
 ## 1. 目标
 
@@ -40,14 +40,17 @@ QQ 的风控会识别"像机器人"的账号，插件尽量让 bot 的操作和�
 | 私聊回复登录 | 会 | 本人私聊 bot 时 |
 | 发开奖结果 | 会 | 开奖时 |
 | 发收录汇总 | 会 | 每天早上 8 点，每个群最多一条 |
-| 发周榜 | 会 | 每周日 20 点，每个群一张图片和一条消息 |
+| `get_qun_album_list` 找周榜的群相册 | 会 | 发周榜前，每个群一次 |
+| `send_packet` 发 QQ 的建相册请求（AddAlbum） | 会 | 群里还没有"鼠洞周榜"相册时，只建一次 |
+| `upload_image_to_qun_album` 传周榜图片 | 会 | 每周日 20 点，每个群一张；QQ 会在群里自动发一条相册动态 |
+| 发周榜的文字版 | 会 | 传完图片，每个群一条 |
 | 发金徽章的祝贺 | 会 | 有人得到金徽章时，只发到 TA 在的群 |
 
 - `get_group_member_list` 带 `no_cache: true` 时，NapCat 会在后台重新拉名单，却仍然先返回旧的缓存，所以插件从来不带。
 - `get_group_member_info` 默认就强制刷新，还会多查一次这个人的资料，所以插件不用它。
 - 自动收录只读收到的群消息，不调用 QQ 接口。消息里的图片由论坛去 QQ 的图片域名下载（第 8.1 节），和群友在 QQ 里点开图片一样，不经过 NapCat。
 
-开奖结果、收录汇总、周榜和金徽章的祝贺排队发，间隔 3–6 秒随机。AstrBot 里有维护者其他插件共用的操作协调器（`platform_manager._qq_automation_guard_v1`）时改走它，和那些插件一起排队，共用账号的发送间隔和掉线后的冷却。
+开奖结果、收录汇总、周榜（建相册、传图片、文字版）和金徽章的祝贺排队发，间隔 3–6 秒随机。AstrBot 里有维护者其他插件共用的操作协调器（`platform_manager._qq_automation_guard_v1`）时改走它，和那些插件一起排队，共用账号的发送间隔和掉线后的冷却。
 
 ## 3. 运行环境
 
@@ -56,7 +59,7 @@ QQ 的风控会识别"像机器人"的账号，插件尽量让 bot 的操作和�
 - 自动收录还要：
   - 一个大模型（整理）和一个嵌入模型（embedding，查重，第 8.5 节），都走 OpenAI 兼容接口。大模型现在用 ECNU 的 `ecnu-plus`；嵌入模型用 bge-m3，跑在维护者家里的电脑上（比如用 Ollama），也可以用 ECNU 的 `ecnu-embedding-small`。
   - 插件直接调这两个接口，不经过 AstrBot 的模型配置：AstrBot 的 `llm_generate` 会丢掉每次请求自带的参数，传不了结构化输出和思考模式。回放用的也是同一份客户端和同一份配置（[回放实验](replay.md)第 3 节）。
-- 依赖 httpx 和 numpy，AstrBot 已经自带；周榜要排版成图片，还要 Playwright，和维护者的[群聊摘要插件](https://github.com/JunieXD/astrbot_plugin_qq_group_digest)一样，第一次要在 AstrBot 用的 Python 环境里运行 `python -m playwright install chromium`。不发周榜的不用装浏览器。
+- 依赖 httpx 和 numpy，AstrBot 已经自带；周榜要排版成图片，还要 Playwright，和维护者的[群聊摘要插件](https://github.com/JunieXD/astrbot_plugin_qq_group_digest)一样，第一次要在 AstrBot 用的 Python 环境里运行 `python -m playwright install chromium`。不发周榜的不用装浏览器。群里还没有周榜相册时要建一个，NapCat 没有建相册的动作，插件照群聊摘要插件的做法用 `send_packet` 发 QQ 自己的请求，要 NapCat 的 PacketBackend 能用。
 - 论坛的 token：管理员在后台的 bot 页创建，bot 的 QQ 号填机器人自己的，范围选 `read`、`act`、`sync`、`auth`、`events`；自动收录要建标签，再加 `moderate`。建收录用的版块时临时加上 `admin`，建完去掉（第 8.9 节）。
 - AstrBot 开了会话白名单的，要放行已同步的群，否则群消息和通知到不了插件。私聊不受白名单影响：白名单在所有插件之前检查，而且没法放行所有私聊，所以插件直接在 aiocqhttp 的客户端上订阅私聊消息（第 7 节）。
 - 本机时间要准：论坛拒收比服务器时间晚 10 分钟以上的同步数据。
@@ -114,14 +117,14 @@ NapCat ⇄ AstrBot（aiocqhttp）
 | --- | --- |
 | `main.py` | AstrBot 入口：注册监听，启动、停止后台任务 |
 | `mousehole/forum.py` | 论坛接口：请求头、gzip，错误转成 `ForumError(code, message)` |
-| `mousehole/qq.py` | 调用 NapCat；回复前的延迟，主动发的消息排队 |
+| `mousehole/qq.py` | 调用 NapCat；回复前的延迟，主动发的消息排队；找、建群相册和传图片 |
 | `mousehole/sync.py` | 成员同步 |
 | `mousehole/login.py` | 私聊登录 |
 | `mousehole/archive.py` | 自动收录：存消息、分批分段、跟进、发帖和更新、撤回、汇总 |
 | `mousehole/judge.py` | 自动收录给大模型的提示词，和它输出的检查 |
 | `mousehole/similar.py` | 查重：帖子的向量索引，找和新提问最像的帖子 |
 | `mousehole/events.py` | 事件流，以及它触发的开奖结果、金徽章的祝贺、个性签名和向量索引的更新 |
-| `mousehole/weekly.py` | 周榜：取论坛的统计和头像，排成 HTML，用 Chromium 截成图片，发到群里；`mousehole/poster/` 是它用的字体（SIL OFL） |
+| `mousehole/weekly.py` | 周榜：取论坛的统计和头像，排成 HTML，用 Chromium 截成图片，传进群相册，再发文字版；`mousehole/poster/` 是它用的字体（SIL OFL） |
 | `tools/fake_forum.py` | 内存里的假论坛，单元测试和回放用 |
 | `tools/boards.py` | 按 `data/boards.json` 在论坛上建版块和标签（第 8.9 节） |
 | `tools/replay.py` | 用导出的历史群消息离线跑自动收录（[回放实验](replay.md)） |
@@ -448,22 +451,29 @@ https://bbs.mousebaoyan.cn/t/42
 https://bbs.mousebaoyan.cn/badges/14
 ```
 
-**周榜**：每周日 20 点（`WEEKLY_WEEKDAY`、`WEEKLY_HOUR`）取 `GET /bot/stats/weekly`，排成一张图片，发到 `weekly.groups`，空的发到论坛上关联的所有群。论坛的统计和榜单见论坛总体设计 §8.15。
+**周榜**：每周日 20 点（`WEEKLY_WEEKDAY`、`WEEKLY_HOUR`）取 `GET /bot/stats/weekly`，排成一张图片，传进 `weekly.groups` 各群的群相册"鼠洞周榜"，空的传到论坛上关联的所有群。论坛的统计和榜单见论坛总体设计 §8.15。
 
 - 图片的做法照群聊摘要插件的"鼠群日报"：HTML 加 CSS，在本机用 Chromium 截成宽 1080px 的长图，不用远程渲染服务；字体是插件自带的霞鹜文楷屏幕阅读版，配色和论坛一样。头像由插件先从论坛取回（`avatar_url`），连同字体嵌进页面，截图时不联网。
 - 图片上依次是：本周概况（新帖、新回复、收录、发过内容的人、第一次登录的人、发出的徽章），获赞最多、回复最多、读的人最多的帖子，获赞最多、被采纳最多、回复最多的人，本周的金徽章。空的榜单不画。
-- 图片发完再发一条消息，@ 上了人的榜、又在这个群里的人，最多 @ 20 个，其余的只写名字。谁在哪个群靠成员同步时读到的名单，关掉成员同步就不 @ 人，金徽章也不发：
+- 图片照群聊摘要插件的"鼠群日报"传进群相册，不在群里另发：上传时 QQ 自己会在群里发一条带图片的相册动态，再发一次就重复了。群里没有"鼠洞周榜"相册就新建一个。用的是 NapCat 的 `upload_image_to_qun_album`，它不收照片说明，相册里的照片没有说明。
+- 传完图片再发一条文字版，一行一个人，序号和数字跟图片上一样；@ 上了人的榜、又在这个群里的人，最多 @ 20 个，其余的只写名字。谁在哪个群靠成员同步时读到的名单，关掉成员同步就不 @ 人，金徽章也不发：
 
   ```text
-  鼠洞本周周榜 🐭
-  获赞最多：@鼠鼠 @阿柒 @夜猫子
-  被采纳最多：@Rex @鼠鼠
-  本周金徽章：@阿柒「精彩的回复」
+  【鼠洞本周周榜】
+  👍 获赞最多
+  1. @鼠鼠 66 赞
+  2. @阿柒 40 赞
+  ✅ 被采纳最多
+  1. Rex 6 次
+  💬 回复最多
+  1. @夜猫子 48 层
+  🏅 本周金徽章
+  1. @阿柒「精彩的回复」
   https://bbs.mousebaoyan.cn
   ```
 
 - 这一周没有新帖也没有新回复的，不发。
-- 发到了哪些群记进 `weekly.json`，插件重启也不重发；到点时插件没开着的，12 小时内开起来就补发，再晚就不发了。没装浏览器、排版失败的，记一条错误，这周不发。
+- 发到了哪些群记进 `weekly.json`，插件重启也不重发；到点时插件没开着的，12 小时内开起来就补发，再晚就不发了。没装浏览器、排版或传相册失败的，记一条错误，没发到的群这周不再发；12 小时内重启插件的会补上。
 
 **论坛的提醒**：论坛直接发邮件到 `QQ号@qq.com`，有提醒就立刻发，插件不参与。bot 不加好友，主动发临时会话又是典型的机器人特征，所以不用 bot 私聊。
 

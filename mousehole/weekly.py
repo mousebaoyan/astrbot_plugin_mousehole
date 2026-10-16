@@ -1,5 +1,5 @@
-"""The weekly poster in the groups (design §9): the forum's week as an image, then a message
-@-ing those on its lists who are in the group."""
+"""The weekly poster in the groups (design §9): the forum's week as an image in each group's
+album, then a message @-ing those on its lists who are in the group."""
 
 import asyncio
 import base64
@@ -24,6 +24,7 @@ HOUR = 20
 # A plugin back after a long stop doesn't post a stale week.
 FRESH = 12 * 3600
 MENTIONS = 20
+ALBUM = "鼠洞周榜"
 WIDTH = 1080
 FONT = Path(__file__).parent / "poster" / "LXGWWenKaiScreen.woff2"
 
@@ -40,38 +41,37 @@ def last_due(now: float) -> float:
 
 
 def mention_message(stats: dict[str, Any], members: set[int], site: str) -> list[dict]:
-    """Who made the lists: @ for those in this group, up to a limit, names for the rest."""
+    """The lists of people one to a line: @ for those in this group, up to a limit, names
+    for the rest."""
 
     def text(value: str) -> dict:
         return {"type": "text", "data": {"text": value}}
 
-    segments = [text("鼠洞本周周榜 🐭")]
     mentioned = 0
+
+    def person(user: dict) -> dict:
+        nonlocal mentioned
+        if user["qq"] in members and mentioned < MENTIONS:
+            mentioned += 1
+            return {"type": "at", "data": {"qq": str(user["qq"])}}
+        return text(user["display_name"])
+
+    segments = [text("【鼠洞本周周榜】")]
+    people = stats["people"]
     lists = [
-        ("获赞最多", stats["people"]["most_liked"]),
-        ("被采纳最多", stats["people"]["most_accepted"]),
-        ("回复最多", stats["people"]["most_replies"]),
+        ("👍 获赞最多", people["most_liked"], "赞"),
+        ("✅ 被采纳最多", people["most_accepted"], "次"),
+        ("💬 回复最多", people["most_replies"], "层"),
     ]
-    for label, ranked in lists:
-        people = [p["user"] for p in ranked]
-        if not people:
-            continue
-        segments.append(text(f"\n{label}："))
-        for user in people:
-            if user["qq"] in members and mentioned < MENTIONS:
-                segments += [{"type": "at", "data": {"qq": str(user["qq"])}}, text(" ")]
-                mentioned += 1
-            else:
-                segments.append(text(f"{user['display_name']} "))
+    for title, ranked, unit in lists:
+        if ranked:
+            segments.append(text(f"\n{title}"))
+        for i, p in enumerate(ranked, 1):
+            segments += [text(f"\n{i}. "), person(p["user"]), text(f" {p['count']} {unit}")]
     if stats["gold_badges"]:
-        segments.append(text("\n本周金徽章："))
-        for g in stats["gold_badges"]:
-            if g["user"]["qq"] in members and mentioned < MENTIONS:
-                segments.append({"type": "at", "data": {"qq": str(g["user"]["qq"])}})
-                mentioned += 1
-            else:
-                segments.append(text(g["user"]["display_name"]))
-            segments.append(text(f"「{g['badge']['name']}」 "))
+        segments.append(text("\n🏅 本周金徽章"))
+    for i, g in enumerate(stats["gold_badges"], 1):
+        segments += [text(f"\n{i}. "), person(g["user"]), text(f"「{g['badge']['name']}」")]
     segments.append(text(f"\n{site}"))
     return segments
 
@@ -83,7 +83,6 @@ STYLE = """
 body { width: %dpx; background: #f3efe8; font-family: WenKai, sans-serif; color: #1f2a28; }
 main { margin: 32px; padding: 48px 52px; background: #fefdfb; border-radius: 32px; }
 header h1 { font-size: 64px; letter-spacing: 4px; }
-header h1 span { color: #ef9f70; }
 header p { margin-top: 8px; font-size: 28px; color: #686d66; }
 .overview { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 36px; }
 .tile { background: #fff; border: 2px solid #ebe6dd; border-radius: 20px; padding: 18px 22px; }
@@ -169,7 +168,7 @@ def poster_html(stats: dict[str, Any], site: str, font: str, avatars: dict[str, 
     return (
         f'<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">'
         f"<style>{STYLE % (font, WIDTH)}</style></head><body><main>"
-        f"<header><h1>鼠洞周榜 <span>🐭</span></h1>"
+        f"<header><h1>鼠洞周榜</h1>"
         f"<p>{start.month} 月 {start.day} 日 – {end.month} 月 {end.day} 日</p></header>"
         f'<div class="overview">{overview}</div>{body}'
         f"<footer>更多讨论在鼠洞：{escape(site.removeprefix('https://'))}</footer>"
@@ -255,11 +254,9 @@ class Weekly:
             res.raise_for_status()
             avatars[url] = "data:image/webp;base64," + base64.b64encode(res.content).decode()
         image = await self.render(poster_html(stats, self.site, font, avatars))
-        picture = [
-            {"type": "image", "data": {"file": "base64://" + base64.b64encode(image).decode()}}
-        ]
         for group in todo:
-            await self.qq.send_group(group, picture)
+            # QQ itself tells the group about the upload, with the picture.
+            await self.qq.upload_album(group, await self.qq.album(group, ALBUM), ALBUM, image)
             members = self.sync.roster.get(group, set())
             await self.qq.send_group(group, mention_message(stats, members, self.site))
             sent.append(group)

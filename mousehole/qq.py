@@ -1,8 +1,12 @@
 """NapCat through AstrBot's aiocqhttp adapter (design §2)."""
 
 import asyncio
+import base64
 import random
+import secrets
 import time
+from collections.abc import Awaitable, Callable
+from datetime import datetime
 from typing import Any
 
 # Seconds between the messages the bot sends of its own accord.
@@ -16,6 +20,44 @@ GUARD_CONFIG = {
     "failure_threshold": 3,
     "failure_cooldown_seconds": 600,
 }
+# NapCat has no action that makes a group album; the QQ client's own request does it, as in the
+# maintainer's digest plugin.
+ADD_ALBUM = "QunAlbum.trpc.qzone.webapp_qun_media.QunMedia.AddAlbum"
+
+
+def protobuf(*fields: tuple[int, int | str | bytes]) -> bytes:
+    def varint(n: int) -> bytes:
+        out = bytearray()
+        while n > 127:
+            out.append(n & 127 | 128)
+            n >>= 7
+        return bytes(out + bytes([n]))
+
+    out = b""
+    for number, value in fields:
+        if isinstance(value, int):
+            out += varint(number << 3) + varint(value)
+        else:
+            value = value.encode() if isinstance(value, str) else value
+            out += varint(number << 3 | 2) + varint(len(value)) + value
+    return out
+
+
+def add_album(group: int, name: str) -> bytes:
+    now = datetime.now()
+    session = (
+        now.strftime("_%m%d%H%M%S")
+        + f"{now.microsecond // 1000:03}_{secrets.randbelow(90000) + 10000}"
+    )
+    info = protobuf((2, str(group)), (3, name), (4, ""), (5, 0))
+    return protobuf(
+        (1, secrets.randbelow(0x7FFFFFFE) + 1),
+        (2, b""),
+        (3, b""),
+        (4, protobuf((1, info))),
+        (5, session),
+        (10, protobuf((1, "fc-appid"), (2, "100"))),
+    )
 
 
 class QQ:
@@ -49,15 +91,53 @@ class QQ:
         return (await self.call("get_status"))["online"]
 
     async def send_group(self, group: int, message: list[dict[str, Any]]) -> None:
-        async def send() -> None:
-            await self.call("send_group_msg", group_id=group, message=message)
+        await self.queued(lambda: self.call("send_group_msg", group_id=group, message=message))
 
+    async def album(self, group: int, name: str) -> str:
+        """The group album of this name, made if the group has none."""
+        if album := await self.find_album(group, name):
+            return album
+        await self.queued(
+            lambda: self.call(
+                "send_packet", cmd=ADD_ALBUM, data=add_album(group, name).hex(), rsp=True
+            )
+        )
+        # Looking again is shorter than decoding the protobuf reply, and as sure.
+        if album := await self.find_album(group, name):
+            return album
+        raise RuntimeError(f"QQ didn't make album {name} in group {group}")
+
+    async def find_album(self, group: int, name: str) -> str | None:
+        cursor = ""
+        while True:
+            page = await self.call("get_qun_album_list", group_id=str(group), attach_info=cursor)
+            for album in page["album_list"]:
+                if album["name"] == name:
+                    return album["album_id"]
+            if not page["has_more"]:
+                return None
+            cursor = page["attach_info"]
+
+    async def upload_album(self, group: int, album: str, name: str, image: bytes) -> None:
+        file = "base64://" + base64.b64encode(image).decode()
+        await self.queued(
+            lambda: self.call(
+                "upload_image_to_qun_album",
+                group_id=str(group),
+                album_id=album,
+                album_name=name,
+                file=file,
+            )
+        )
+
+    async def queued(self, action: Callable[[], Awaitable[Any]]) -> None:
+        """What the bot does in the groups of its own accord, spaced out like a person."""
         guard = getattr(self.manager, "_qq_automation_guard_v1", None)
         if guard is not None:
             await guard.run(
                 account=self.platform().meta().id,
                 online=self.online,
-                action=send,
+                action=action,
                 config=GUARD_CONFIG,
                 gap=GAP,
             )
@@ -65,6 +145,6 @@ class QQ:
         async with self.sending:
             await asyncio.sleep(self.next_at - time.monotonic())
             try:
-                await send()
+                await action()
             finally:
                 self.next_at = time.monotonic() + random.uniform(*GAP)
