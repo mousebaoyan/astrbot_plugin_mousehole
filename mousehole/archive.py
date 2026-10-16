@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
@@ -186,8 +187,10 @@ def load(path: Path) -> list[Message]:
 
 
 def content(messages: list[Message], body: str) -> dict:
-    """The organized Markdown, then the pictures in the messages, copied to the forum already."""
-    pictures = [f"![]({u})" for m in messages for u in m.uploads]
+    """The organized Markdown with the pictures in the messages, copied to the forum already:
+    where it kept the [图片] the LLM was shown for them, and the rest after it."""
+    pictures = iter([f"![]({u})" for m in messages for u in m.uploads])
+    body = re.sub(r"\[图片\]", lambda _: next(pictures, ""), body)
     return {"markdown": "\n\n".join([body, *pictures])}
 
 

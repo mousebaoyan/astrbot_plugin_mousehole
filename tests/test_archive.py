@@ -4,7 +4,7 @@ from datetime import datetime
 import pytest
 from conftest import BOT, GROUP, Script, message
 
-from mousehole.archive import BATCH_HOURS, Message, Tuning, load, segments, until
+from mousehole.archive import BATCH_HOURS, Message, Tuning, content, load, segments, until
 from mousehole.llm import Truncated, Unavailable
 
 TUNING = Tuning()
@@ -465,3 +465,14 @@ async def test_a_token_that_may_not_make_tags_posts_the_thread_without_the_new_o
     report = await s.batch(message(1, ASKER, "华东师大预推免"))
     assert thread_of(s).tags == ["预推免"]
     assert report["dropped"] == ["tag 华东师大: forum scope_missing"]
+
+
+def test_pictures_go_where_the_body_kept_them():
+    shot = Message(1, ASKER, 0, [], uploads=["/uploads/a.webp", "/uploads/b.webp"])
+    body = "看这张：[图片]分数线在这。[图片][图片]"
+    assert content([shot], body) == {
+        "markdown": "看这张：![](/uploads/a.webp)分数线在这。![](/uploads/b.webp)"
+    }
+    assert content([shot], "分数线在这。")["markdown"] == (
+        "分数线在这。\n\n![](/uploads/a.webp)\n\n![](/uploads/b.webp)"
+    )
