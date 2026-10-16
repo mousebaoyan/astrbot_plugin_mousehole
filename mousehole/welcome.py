@@ -1,5 +1,5 @@
-"""入群欢迎 (design §9): newcomers to a group, a few minutes' worth at a time, welcomed with
-the words the maintainer set."""
+"""入群欢迎 (design §9): newcomers to a group, a few minutes' worth at a time and hours
+apart, welcomed with the words the maintainer set."""
 
 import asyncio
 import logging
@@ -13,6 +13,8 @@ log = logging.getLogger("astrbot.plugin.astrbot_plugin_mousehole")
 
 # Seconds from the first newcomer to the welcome: those joining meanwhile get the same one.
 WAIT = 600
+# Seconds from one welcome in a group to the next: newcomers meanwhile wait and share it.
+GAP = 7200
 MENTIONS = 20
 
 
@@ -50,6 +52,8 @@ class Welcome:
         self.clock = clock
         # Newcomers waiting for their welcome, by group, with when the first of them came.
         self.waiting: dict[int, tuple[float, list[int]]] = {}
+        # When each group may next be welcomed into.
+        self.next_at: dict[int, float] = {}
 
     def joined(self, group: int, user: int, bot: int) -> None:
         """Someone came into a group; those in another synced group already aren't new."""
@@ -72,6 +76,7 @@ class Welcome:
     async def send_due(self) -> None:
         now = self.clock()
         for group, (since, users) in list(self.waiting.items()):
-            if now - since >= WAIT:
+            if now >= max(since + WAIT, self.next_at.get(group, 0.0)):
                 del self.waiting[group]
+                self.next_at[group] = now + GAP
                 await self.qq.send_group(group, welcome_message(self.template, users, self.site))

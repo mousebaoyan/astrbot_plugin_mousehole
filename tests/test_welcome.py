@@ -1,4 +1,4 @@
-from mousehole.welcome import MENTIONS, WAIT, Welcome, welcome_message
+from mousehole.welcome import GAP, MENTIONS, WAIT, Welcome, welcome_message
 
 GROUP = 100200300
 BOT = 20000
@@ -15,7 +15,7 @@ def test_the_template_ats_each_newcomer_and_names_the_forum():
     ]
 
 
-async def test_newcomers_within_minutes_share_a_welcome_and_members_of_another_group_get_none():
+async def test_newcomers_share_welcomes_hours_apart_and_members_of_another_group_get_none():
     sent = []
 
     class FakeQQ:
@@ -42,5 +42,8 @@ async def test_newcomers_within_minutes_share_a_welcome_and_members_of_another_g
     for user in range(100, 100 + MENTIONS + 5):
         w.joined(GROUP, user, BOT)
     clock["t"] += WAIT
+    await w.send_due()
+    assert len(sent) == 1  # the last welcome was less than GAP ago
+    clock["t"] = WAIT + GAP
     await w.send_due()
     assert len(sent[-1][1]) == MENTIONS
