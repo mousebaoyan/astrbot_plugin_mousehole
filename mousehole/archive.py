@@ -407,14 +407,17 @@ class Archive:
         since = self.state["batch"]
         for group in self.state["groups"]:
             path = self.pending / f"{group}.jsonl"
-            heard = {m.id for m in load(path)} if path.exists() else set()
+            kept = load(path) if path.exists() else []
+            # By ID, and by who and when as well, should the history's IDs not be the events'.
+            heard = {m.id for m in kept} | {(m.user, int(m.time)) for m in kept}
             missed: dict[int, dict] = {}
             before = None
             try:
                 while True:
                     page = sorted(await self.history(group, before), key=lambda r: r["time"])
                     for r in page:
-                        if r["time"] >= since and r["message_id"] not in heard:
+                        said = (r["user_id"], int(r["time"]))
+                        if r["time"] >= since and not {r["message_id"], said} & heard:
                             missed[r["message_id"]] = r
                     if not page or page[0]["time"] < since or page[0]["message_id"] == before:
                         break

@@ -266,7 +266,9 @@ async def test_messages_missed_while_down_are_read_back_from_the_groups_history(
 
     heard, missed = message(10, ASKER, "听到了的"), message(12, ANSWERER, "漏掉的")
     older = message(2, OTHER, "上一批的")
-    pages = {None: [heard, message(11, OTHER, "也漏掉了"), missed], 10: [older, heard]}
+    # The same message under another ID is heard all the same.
+    renamed = Message(99, heard.user, heard.time, heard.segments)
+    pages = {None: [renamed, message(11, OTHER, "也漏掉了"), missed], 99: [older, renamed]}
     asked = []
 
     async def history(group, before):
@@ -280,7 +282,7 @@ async def test_messages_missed_while_down_are_read_back_from_the_groups_history(
     pending = load(s.archive.pending / f"{GROUP}.jsonl")
     assert [m.id for m in pending] == [10, 11, 12]
     # Back page by page till the batch's start.
-    assert asked == [(GROUP, None), (GROUP, 10)]
+    assert asked == [(GROUP, None), (GROUP, 99)]
 
 
 async def test_a_batch_or_summary_missed_while_down_goes_right_away(setup):
