@@ -7,7 +7,9 @@ from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools
 
+from .mousehole.answers import Answers
 from .mousehole.archive import Archive, Message, Tuning, plain
+from .mousehole.cards import Cards
 from .mousehole.events import Events
 from .mousehole.forum import Forum, ForumError
 from .mousehole.llm import LLM, Embedder, Settings
@@ -17,6 +19,7 @@ from .mousehole.similar import Index
 from .mousehole.suggest import Suggest
 from .mousehole.sync import Sync
 from .mousehole.weekly import Weekly
+from .mousehole.welcome import Welcome
 
 NAME = "astrbot_plugin_mousehole"
 START_RETRY = 60
@@ -105,6 +108,26 @@ class Mousehole(Star):
             if c["weekly"]["enabled"]
             else None
         )
+        self.answers = (
+            Answers(self.forum, self.qq, self.sync, data / "answers.json")
+            if c["answers"]["enabled"]
+            else None
+        )
+        welcome = c["welcome"]
+        self.welcome = (
+            Welcome(
+                self.qq,
+                self.sync,
+                groups=[int(g) for g in welcome["groups"]],
+                template=welcome["template"],
+                site=c["forum_url"],
+            )
+            if welcome["enabled"]
+            else None
+        )
+        self.cards = (
+            Cards(self.forum, self.qq, site=c["forum_url"]) if c["cards"]["enabled"] else None
+        )
         self.tasks = [asyncio.create_task(self.start())]
         # When AstrBot starts, plugins load before the platforms; installed or reloaded later,
         # the platform is already there.
@@ -130,6 +153,10 @@ class Mousehole(Star):
             self.tasks.append(asyncio.create_task(self.suggest.run()))
         if self.weekly:
             self.tasks.append(asyncio.create_task(self.weekly.run()))
+        if self.answers:
+            self.tasks.append(asyncio.create_task(self.answers.run()))
+        if self.welcome:
+            self.tasks.append(asyncio.create_task(self.welcome.run()))
 
     async def history(self, group: int, before: int | None) -> list[dict]:
         """A page of the group's history from NapCat, up to the message `before` or the latest."""
@@ -195,8 +222,12 @@ class Mousehole(Star):
                 if self.suggest:
                     self.suggest.add(group, Message.from_onebot(raw), raw["self_id"])
                 await self.archive.add(group, Message.from_onebot(raw), raw["self_id"])
+            if self.cards:
+                await self.cards.saw(raw)
 
     async def on_notice(self, raw: dict) -> None:
+        if self.welcome and raw["notice_type"] == "group_increase":
+            self.welcome.joined(raw["group_id"], raw["user_id"], raw["self_id"])
         if raw["notice_type"] != "group_recall":
             await self.sync.notice(raw)
             return

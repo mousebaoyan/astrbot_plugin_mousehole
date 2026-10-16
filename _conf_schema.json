@@ -65,6 +65,54 @@
       }
     }
   },
+  "answers": {
+    "description": "新回答提醒",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "群里问过的问题在论坛上有了新回答时，在群里引用提问告诉楼主",
+        "type": "bool",
+        "default": true,
+        "hint": "每天 10、16、22 点各查一轮。要开着成员同步，插件才知道楼主还在不在群里。"
+      }
+    }
+  },
+  "welcome": {
+    "description": "入群欢迎",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "有人进群时欢迎",
+        "type": "bool",
+        "default": true,
+        "hint": "10 分钟内进群的人合成一条；已经在另一个关联群里的人不欢迎。"
+      },
+      "groups": {
+        "description": "在哪些群欢迎",
+        "type": "list",
+        "default": [],
+        "hint": "填群号；空的是论坛上关联的所有群。"
+      },
+      "template": {
+        "description": "欢迎的话",
+        "type": "text",
+        "default": "欢迎 {at} 来到鼠群\n群里的问答和经验都整理在鼠洞：{forum}\n有问题先去搜一搜，没搜到就直接在群里问；想请大家帮忙定位，可以在鼠洞发「保研定位」帖\n私聊我发「登录」就能登录鼠洞，记得按群公告改好群名片～",
+        "hint": "{at} 换成 @ 新进群的人，{forum} 换成论坛地址。"
+      }
+    }
+  },
+  "cards": {
+    "description": "链接卡片",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "群友发了帖子的链接时，补一张写着标题和回复数的卡片",
+        "type": "bool",
+        "default": true,
+        "hint": "以发链接的人的身份读帖子，他看不到的不发。"
+      }
+    }
+  },
   "weekly": {
     "description": "周榜",
     "type": "object",
