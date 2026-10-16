@@ -13,7 +13,7 @@ def exported(id, seq, uin, elements, **flags):
     }
 
 
-def test_exported_messages_become_onebot_segments_quoting_by_seq():
+def test_exported_messages_become_onebot_segments_by_their_ids():
     export = {
         "chatInfo": {"peerUid": "100200300", "selfUin": "20000"},
         "messages": [
@@ -28,16 +28,20 @@ def test_exported_messages_become_onebot_segments_quoting_by_seq():
                     {"type": "reply", "data": {"referencedMessageId": "7690000000000000001"}},
                     {"type": "reply", "data": {"referencedMessageId": "gone"}},
                     {"type": "at", "data": {"uin": "1", "name": "鼠1"}},
-                    {"type": "image", "data": {"subType": "sticker", "url": "a"}},
-                    {"type": "image", "data": {"subType": "photo", "url": "b"}},
+                    {"type": "image", "data": {"subType": "sticker", "md5": "a"}},
+                    {"type": "image", "data": {"subType": "photo", "md5": "b"}},
                     {"type": "market_face", "data": {}},
                 ],
             ),
         ],
     }
     group, bot, messages = convert(export)
-    assert (group, bot, [m.id for m, _, _ in messages]) == (100200300, 20000, [11, 14])
+    ids = [7690000000000000001, 7690000000000000004]
+    assert (group, bot, [m.id for m, _, _ in messages]) == (100200300, 20000, ids)
     m, name, text = messages[1]
-    assert (m.user, m.time, m.quoted, name, text) == (2, 1_791_500_014, 11, "鼠2", "原文")
+    assert (m.user, m.time, m.quoted, name, text) == (2, 1_791_500_014, ids[0], "鼠2", "原文")
     assert [s["type"] for s in m.segments] == ["reply", "at", "image", "image", "mface"]
-    assert [s["data"].get("sub_type") for s in m.segments[2:4]] == [1, 0]
+    assert [s["data"] for s in m.segments[2:4]] == [
+        {"sub_type": 1, "md5": "a"},
+        {"sub_type": 0, "md5": "b"},
+    ]

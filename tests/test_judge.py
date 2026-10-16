@@ -23,7 +23,7 @@ def numbered(*messages):
 
 
 def check(raw, numbers, questions=None, floors=None):
-    return judge.check(raw, numbers, questions or {}, floors or {}, {"qa"}, {"夏令营"})
+    return judge.check(raw, numbers, questions or {}, floors or {}, {"qa"}, {"夏令营"}, {1: "U1"})
 
 
 @pytest.mark.parametrize(
@@ -32,6 +32,7 @@ def check(raw, numbers, questions=None, floors=None):
         ({"board": "nope"}, "unknown board nope"),
         ({"title": "问"}, "no usable title"),
         ({"messages": [1, 2]}, "messages by more than one person"),
+        ({"author": "U2"}, "messages not by U2"),
         ({"messages": [9]}, "unknown message 9"),
         ({"same_as": "Q3"}, "unknown same_as Q3"),
         ({"body": " "}, "no body"),

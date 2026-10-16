@@ -30,6 +30,9 @@ log = logging.getLogger("astrbot.plugin.astrbot_plugin_mousehole")
 Complete = Callable[[str, str, dict], Awaitable[tuple[str, int, int]]]
 # (group, OneBot message segments): sends to the group
 Notify = Callable[[int, list[dict]], Awaitable[None]]
+# (group, a message's ID or None for the latest): the OneBot messages of the group's history up
+# to it, as NapCat's get_group_msg_history gives them
+History = Callable[[int, int | None], Awaitable[list[dict]]]
 
 
 @dataclass
@@ -65,6 +68,8 @@ SUMMARY_ITEMS = 10
 # summary that couldn't be sent, is tried again.
 PAUSE = 600
 NEW_TAGS_PER_DAY = 10
+# Seconds between pages of a group's history read back, as a person scrolling up.
+HISTORY_GAP = 1
 
 PLACEHOLDERS = {
     "file": "[文件]",
@@ -139,6 +144,8 @@ class Message:
     # Its number in the group, which the models refer to it by.
     number: int = 0
     floor: Floor | None = None
+    # The floor it was a reaction to, when it said no more than that.
+    reacted: Floor | None = None
     recalled: bool = False
 
     @property
@@ -256,14 +263,17 @@ class Archive:
         prefixes: list[str],
         site: str,
         notify: Notify | None = None,
+        history: History | None = None,
         tuning: Tuning | None = None,
         clock: Callable[[], float] = time.time,
     ):
         """`data` is where messages wait and the summary is kept; `site` is the forum's address
-        for links in the summary; without `notify` none is sent."""
+        for links in the summary; without `notify` none is sent, without `history` messages
+        missed are not looked for."""
         self.forum = forum
         self.site = site.rstrip("/")
         self.notify = notify
+        self.history = history
         self.complete = complete
         self.index = index
         self.tuning = tuning or Tuning()
@@ -279,6 +289,12 @@ class Archive:
         if self.summary_file.exists():
             saved = json.loads(self.summary_file.read_text(encoding="utf-8"))
             self.summary = {int(group): entries for group, entries in saved.items()}
+        # When the last batch started and the last summary went, and the groups archived: what a
+        # restart goes on from.
+        self.state_file = data / "archive.json"
+        self.state: dict[str, Any] = {"batch": clock(), "summary": clock(), "groups": []}
+        if self.state_file.exists():
+            self.state = json.loads(self.state_file.read_text(encoding="utf-8"))
         self.chats: dict[int, Chat] = {}
         self.indexed = False
         self.boards: list[dict] = []
@@ -298,6 +314,9 @@ class Archive:
     async def add(self, group: int, m: Message, bot: int) -> None:
         """Kept on disk for the next batch, its pictures copied to the forum now: QQ's links
         expire within hours (design §8.1)."""
+        if group not in self.state["groups"]:
+            self.state["groups"].append(group)
+            self.save_state()
         if not self.worth(m, bot):
             return
         for s in m.segments:
@@ -334,10 +353,14 @@ class Archive:
         await asyncio.gather(self.work_batches(), self.send_summaries())
 
     async def work_batches(self) -> None:
-        # A batch a restart broke off is gone on with first.
+        # A batch a restart broke off is gone on with first, and one missed while the plugin
+        # was down starts right away.
         while True:
             try:
                 await self.ready()
+                await self.catch_up()
+                if self.due("batch", BATCH_HOURS):
+                    self.start_batch()
                 async for report in self.batch():
                     # What the LLM wrote stays out of the logs: it is the members' words.
                     tokens = sum(c["input_tokens"] + c["output_tokens"] for c in report["llm"])
@@ -356,13 +379,55 @@ class Archive:
                     continue
                 log.exception("Archiving failed")
             await self.wait_until(BATCH_HOURS)
-            self.start_batch()
 
     async def send_summaries(self) -> None:
         while True:
-            await self.wait_until((SUMMARY_HOUR,))
+            # One missed while the plugin was down goes now.
+            if not self.due("summary", (SUMMARY_HOUR,)):
+                await self.wait_until((SUMMARY_HOUR,))
             while not await self.send_summary():
                 await asyncio.sleep(PAUSE)
+            self.state["summary"] = self.clock()
+            self.save_state()
+
+    def due(self, what: str, hours: tuple[int, ...]) -> bool:
+        """Whether one of the hours came since `what` last happened."""
+        last = self.state[what]
+        return self.clock() >= last + until(hours, last)
+
+    def save_state(self) -> None:
+        part = self.state_file.with_suffix(".part")
+        part.write_text(json.dumps(self.state), encoding="utf-8")
+        part.replace(self.state_file)
+
+    async def catch_up(self) -> None:
+        """Messages the plugin didn't hear, while it or AstrBot was down or cut off from NapCat,
+        read back from each group's history since the batch began (design §8.1)."""
+        if self.history is None:
+            return
+        since = self.state["batch"]
+        for group in self.state["groups"]:
+            path = self.pending / f"{group}.jsonl"
+            heard = {m.id for m in load(path)} if path.exists() else set()
+            missed: dict[int, dict] = {}
+            before = None
+            try:
+                while True:
+                    page = sorted(await self.history(group, before), key=lambda r: r["time"])
+                    for r in page:
+                        if r["time"] >= since and r["message_id"] not in heard:
+                            missed[r["message_id"]] = r
+                    if not page or page[0]["time"] < since or page[0]["message_id"] == before:
+                        break
+                    before = page[0]["message_id"]
+                    await asyncio.sleep(HISTORY_GAP)
+            except Exception:
+                # The batch goes on with what was heard and what was read back so far.
+                log.exception("Reading the history of group %s failed", group)
+            for r in sorted(missed.values(), key=lambda r: r["time"]):
+                await self.add(group, Message.from_onebot(r), r["self_id"])
+            if missed:
+                log.info("Took in %d messages group %s had that were missed", len(missed), group)
 
     async def wait_until(self, hours: tuple[int, ...]) -> None:
         """Till the next of these hours o'clock by the wall clock, which goes on while the
@@ -392,6 +457,8 @@ class Archive:
         stamp = int(self.clock())
         for path in self.pending.glob("*.jsonl"):
             path.rename(self.batches / f"{path.stem}-{stamp}.jsonl")
+        self.state["batch"] = self.clock()
+        self.save_state()
 
     async def batch(self) -> AsyncIterator[dict[str, Any]]:
         """Archives the batches there are, a group's after another's and segment by segment,
@@ -480,6 +547,9 @@ class Archive:
         parts.append(self.text(chat, m))
         if m.floor is not None:
             parts.append(f"〔已收：{names[m.floor]}〕" if m.floor in names else "〔已收〕")
+        elif m.reacted is not None:
+            name = names.get(m.reacted)
+            parts.append(f"〔已收：回应 {name}〕" if name else "〔已收：回应〕")
         return " ".join(parts)
 
     def before(self, chat: Chat, first: Message, count: int) -> list[Message]:
@@ -556,6 +626,7 @@ class Archive:
             floors,
             {b["slug"] for b in self.boards},
             set(self.tags),
+            chat.aliases,
         )
         report["dropped"] += plan.dropped
         touched = await self.carry_out(chat, plan, questions, floors, report)
@@ -703,6 +774,17 @@ class Archive:
             work = self.rewrite(chat, floor, messages, edit.body, edit.title, report)
             if await attempt(f"edit {floor.post}", work):
                 touched.add(floor.question)
+        for item in plan.reactions:
+            what = f"react #{item.message.number}"
+            target = floors.get(item.post) or answered.get(item.post)
+            if target is None and item.post in asked:
+                target = asked[item.post].floor
+            if target is None:
+                report["dropped"].append(f"{what}: {item.post} was not posted")
+            elif target.author == item.message.user:
+                report["dropped"].append(f"{what}: their own floor")
+            else:
+                await attempt(what, self.react(chat, target, item))
         return touched
 
     # ---- Posting
@@ -872,6 +954,21 @@ class Archive:
                 raise
             post = await self.forum.call("GET", f"/posts/{e.details['post_id']}")
         return self.settle(q, post, author, messages, body)
+
+    async def react(self, chat: Chat, floor: Floor, item: judge.Reaction) -> bool:
+        """Their reaction to the floor, and their boost under it, as said in the group."""
+        m = item.message
+        said = {"source": self.source(chat, [m]), "created_at": int(m.time)}
+        path = f"/posts/{floor.post}"
+        await self.forum.call(
+            "PUT", f"{path}/reaction", body={"emoji": item.emoji} | said, act_as=m.user
+        )
+        if item.boost is not None:
+            await self.forum.call(
+                "PUT", f"{path}/boost", body={"body": item.boost} | said, act_as=m.user
+            )
+        m.reacted = floor
+        return True
 
     async def rewrite(
         self,

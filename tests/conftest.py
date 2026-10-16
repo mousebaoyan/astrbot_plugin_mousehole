@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from mousehole import forum
+from mousehole import archive, forum
 from mousehole.archive import Archive, Message
 from mousehole.similar import Index
 from tools.fake_forum import FakeForum
@@ -79,9 +79,10 @@ class Setup:
 
 
 @pytest.fixture(autouse=True)
-def forum_asks_once(monkeypatch):
-    """Asking the forum again is tested on its own."""
+def no_waiting(monkeypatch):
+    """Asking the forum again is tested on its own; history is read back without pauses."""
     monkeypatch.setattr(forum, "RETRY_WAITS", ())
+    monkeypatch.setattr(archive, "HISTORY_GAP", 0)
 
 
 @pytest.fixture

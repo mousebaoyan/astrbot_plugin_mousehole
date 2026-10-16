@@ -58,9 +58,10 @@ SIMILAR_TITLES = 0.3
 
 def convert(export: dict) -> tuple[int, int, list[tuple[Message, str, str]]]:
     """The group, the exporting account (taken for the bot), and each message with its sender's
-    card and text as exported. Recalled messages lost their text, and system ones say nothing."""
+    card and text as exported. Recalled messages lost their text, and system ones say nothing.
+    Messages go by QQ's message IDs, which the forum keeps apart from those the plugin sees."""
     info = export["chatInfo"]
-    seqs = {m["id"]: int(m["seq"]) for m in export["messages"]}
+    ids = {m["id"] for m in export["messages"]}
     messages = []
     for m in export["messages"]:
         if m["system"] or m["recalled"]:
@@ -73,16 +74,17 @@ def convert(export: dict) -> tuple[int, int, list[tuple[Message, str, str]]]:
             elif kind == "at":
                 segments.append({"type": "at", "data": {"qq": data.get("uin") or "all"}})
             elif kind == "reply":
-                quoted = seqs.get(data.get("referencedMessageId"))
-                if quoted is not None:
-                    segments.append({"type": "reply", "data": {"id": str(quoted)}})
+                quoted = data.get("referencedMessageId")
+                if quoted in ids:
+                    segments.append({"type": "reply", "data": {"id": quoted}})
             elif kind == "image":
                 sticker = data.get("subType") == "sticker"
-                image = {"sub_type": 1 if sticker else 0, "url": data.get("url")}
+                # The picture itself is where the export keeps it, by its MD5.
+                image = {"sub_type": 1 if sticker else 0, "md5": data.get("md5")}
                 segments.append({"type": "image", "data": image})
             else:
                 segments.append({"type": {"market_face": "mface"}.get(kind, kind), "data": {}})
-        message = Message(int(m["seq"]), int(m["sender"]["uin"]), m["timestamp"] / 1000, segments)
+        message = Message(int(m["id"]), int(m["sender"]["uin"]), m["timestamp"] / 1000, segments)
         messages.append((message, m["sender"]["name"], m["content"]["text"]))
     return int(info["peerUid"]), int(info["selfUin"]), messages
 
@@ -307,6 +309,11 @@ def threads_md(fake: FakeForum, shown: dict, reports: list[dict]) -> str:
                 notes.append("已删除")
             note = f"（{'，'.join(notes)}）" if notes else ""
             lines += [f"### {p.floor} 楼 · {who}{note}", "", p.body, ""]
+            if p.reactions:
+                said = "、".join(f"{names.get(u, '?')} {e}" for u, e in p.reactions.items())
+                lines += [f"回应：{said}", ""]
+            for u, boost in p.boosts.items():
+                lines += [f"短评 · {names.get(u, '?')}：{boost}", ""]
             for i, old in enumerate(p.revisions, 1):
                 lines.append(f"> 第 {i} 版：{old}")
             if p.revisions:

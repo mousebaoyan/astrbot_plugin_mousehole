@@ -122,6 +122,30 @@ async def test_a_question_and_its_answer_become_a_thread_and_a_reply(setup):
     assert "#3 U2 ↩#2 看学校" in prompt and str(ASKER) not in prompt
 
 
+async def test_thanks_and_me_too_become_reactions_and_boosts_as_said_in_the_group(setup):
+    react = [
+        {"message": 4, "post": "N1", "emoji": "+1", "boost": "同问"},
+        {"message": 5, "post": "N2", "emoji": "heart", "boost": None},
+        {"message": 6, "post": "N1", "emoji": "+1", "boost": None},
+        {"message": 3, "post": "N1", "emoji": "clap", "boost": "看学校"},
+    ]
+    s = setup(Script({"new": [QUESTION, ANSWER], "edit": [], "react": react}))
+    report = await s.batch(
+        *first_batch(),
+        message(4, OTHER, "同问", reply=2),
+        message(5, ASKER, "谢谢佬", reply=3),
+        message(6, ASKER, "顶一下"),
+    )
+    opening, reply = thread_of(s).posts
+    # The answer claps the question besides, without its words again.
+    assert opening.reactions == {OTHER: "+1", ANSWERER: "clap"}
+    assert opening.boosts == {OTHER: "同问"}
+    assert (reply.reactions, reply.boosts) == ({ASKER: "heart"}, {})
+    assert report["dropped"] == ["react #6: their own floor"]
+    # Dated as said in the group, as the floors are.
+    assert (opening.created_at, reply.created_at) == (message(1, 0).time, message(3, 0).time)
+
+
 async def test_what_the_asker_adds_later_rewrites_the_opening_and_its_title(setup):
     edit = {"post": "Q1", "messages": [4], "title": "rank 10% 预推免两批能都报吗", "body": "新正文"}
     s = await asked(setup, {"new": [], "edit": [edit]})
@@ -228,6 +252,45 @@ async def test_a_quote_of_a_message_no_longer_kept_fetches_its_thread_to_go_by(s
     prompt = s.llm.prompts[0][1]
     assert "Q1 标题：很早以前的问题" in prompt and "Q1（论坛上）：早先的正文" in prompt
     assert report["dropped"] == ["edit Q1: not a floor that can be edited"]
+
+
+async def test_messages_missed_while_down_are_read_back_from_the_groups_history(setup):
+    def onebot(m):
+        return {
+            "message_id": m.id,
+            "user_id": m.user,
+            "time": m.time,
+            "message": m.segments,
+            "self_id": BOT,
+        }
+
+    heard, missed = message(10, ASKER, "听到了的"), message(12, ANSWERER, "漏掉的")
+    older = message(2, OTHER, "上一批的")
+    pages = {None: [heard, message(11, OTHER, "也漏掉了"), missed], 10: [older, heard]}
+    asked = []
+
+    async def history(group, before):
+        asked.append((group, before))
+        return [onebot(m) for m in pages[before]]
+
+    s = setup(Script(), history=history)
+    s.archive.state["batch"] = message(5, 0).time
+    await s.archive.add(GROUP, heard, BOT)
+    await s.archive.catch_up()
+    pending = load(s.archive.pending / f"{GROUP}.jsonl")
+    assert [m.id for m in pending] == [10, 11, 12]
+    # Back page by page till the batch's start.
+    assert asked == [(GROUP, None), (GROUP, 10)]
+
+
+async def test_a_batch_or_summary_missed_while_down_goes_right_away(setup):
+    s = setup(Script())
+    day = datetime(2026, 10, 16).timestamp()
+    s.archive.state |= {"batch": day + 4 * 3600, "summary": day - 16 * 3600}
+    s.now = day + 17 * 3600
+    assert (s.archive.due("batch", BATCH_HOURS), s.archive.due("summary", (8,))) == (False, True)
+    s.now = day + 19 * 3600
+    assert s.archive.due("batch", BATCH_HOURS)
 
 
 async def test_a_segment_a_service_failed_waits_in_its_batch_to_be_tried_again(setup):

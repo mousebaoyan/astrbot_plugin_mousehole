@@ -19,6 +19,8 @@ from .mousehole.weekly import Weekly
 
 NAME = "astrbot_plugin_mousehole"
 START_RETRY = 60
+# Messages a page of a group's history holds, read back for those missed.
+HISTORY_PAGE = 100
 
 
 class Mousehole(Star):
@@ -66,6 +68,7 @@ class Mousehole(Star):
                 prefixes=self.context.get_config()["wake_prefix"],
                 site=c["forum_url"],
                 notify=self.qq.send_group if c["archive"]["notify"] else None,
+                history=self.history,
                 tuning=Tuning.of(c),
             )
         lottery = c["lottery"]
@@ -114,6 +117,13 @@ class Mousehole(Star):
             self.tasks.append(asyncio.create_task(self.archive.run()))
         if self.weekly:
             self.tasks.append(asyncio.create_task(self.weekly.run()))
+
+    async def history(self, group: int, before: int | None) -> list[dict]:
+        """A page of the group's history from NapCat, up to the message `before` or the latest."""
+        params = {"group_id": str(group), "count": HISTORY_PAGE}
+        if before is not None:
+            params["message_seq"] = str(before)
+        return (await self.qq.call("get_group_msg_history", **params))["messages"]
 
     @filter.on_platform_loaded()
     async def on_platform_loaded(self):

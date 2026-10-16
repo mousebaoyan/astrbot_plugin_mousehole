@@ -28,6 +28,9 @@ class Post:
     deleted: bool = False
     # Earlier bodies, oldest first.
     revisions: list[str] = field(default_factory=list)
+    # By whom: their emoji, their boost.
+    reactions: dict[int, str] = field(default_factory=dict)
+    boosts: dict[int, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -120,7 +123,8 @@ class FakeForum:
         if key in self.keys:
             return self.keys[key]
         path = request.url.path.removeprefix("/api/v1")
-        body = json.loads(request.content) if request.content else None
+        json_body = request.headers.get("Content-Type") == "application/json"
+        body = json.loads(request.content) if json_body else None
         act_as = request.headers.get("X-Act-As")
         user = int(act_as.removeprefix("qq:")) if act_as else 0
         if request.method != "GET" and user in self.proxy_disabled:
@@ -184,6 +188,16 @@ class FakeForum:
                 p.deleted = True
                 self.unlink([p])
                 return httpx.Response(204)
+            case "PUT", ["posts", post, "reaction"]:
+                p = self.posts[int(post)]
+                if p.author == user:
+                    return error(403, "forbidden")
+                p.reactions[user] = body["emoji"]
+                return httpx.Response(204)
+            case "PUT", ["posts", post, "boost"]:
+                p = self.posts[int(post)]
+                p.boosts[user] = body["body"]
+                return ok({"body": body["body"], "created_at": body.get("created_at")})
             case "GET", ["bot", "messages", "group", group, message]:
                 post_id = self.links.get((int(group), int(message)))
                 if post_id is None:
@@ -191,6 +205,9 @@ class FakeForum:
                 return ok({"thread_id": self.posts[post_id].thread, "post_id": post_id})
             case "GET", ["search", "similar"]:
                 return ok({"items": self.similar(params["text"])})
+            case "POST", ["uploads"]:
+                self.uploads += 1
+                return httpx.Response(201, json={"url": f"/uploads/00/{self.uploads:064x}.webp"})
             case "POST", ["uploads", "fetch"]:
                 self.uploads += 1
                 return httpx.Response(201, json={"url": f"/uploads/00/{self.uploads:064x}.webp"})
@@ -253,11 +270,11 @@ class FakeForum:
             body["title"],
             body["tags"],
             user,
-            self.now(),
+            body.get("created_at", self.now()),
         )
         self.threads[t.id] = t
         opening = Post(
-            self.next_id(), t.id, 1, user, self.render(body["content"]), None, self.now()
+            self.next_id(), t.id, 1, user, self.render(body["content"]), None, t.created_at
         )
         t.posts.append(opening)
         self.posts[opening.id] = opening
@@ -274,7 +291,7 @@ class FakeForum:
             user,
             self.render(body["content"]),
             body.get("reply_to_id"),
-            self.now(),
+            body.get("created_at", self.now()),
         )
         t.posts.append(p)
         self.posts[p.id] = p

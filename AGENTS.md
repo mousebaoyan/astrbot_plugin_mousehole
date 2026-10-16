@@ -23,6 +23,7 @@
 | `uv run pytest` | 测试 |
 | `uv run ruff check .`、`uv run ruff format .` | lint 和格式化 |
 | `uv run python -m tools.replay …` | 回放历史群消息，见[回放实验](docs/replay.md) |
+| `uv run python -m tools.history …` | 把导出的历史群消息收录到论坛，见设计第 8.10 节 |
 | `uv run python -m tools.boards …` | 在论坛上建收录用的版块和标签（设计第 8.9 节） |
 
 ## 语言
