@@ -959,9 +959,10 @@ class Archive:
         m = item.message
         said = {"source": self.source(chat, [m]), "created_at": int(m.time)}
         path = f"/posts/{floor.post}"
-        await self.forum.call(
-            "PUT", f"{path}/reaction", body={"emoji": item.emoji} | said, act_as=m.user
-        )
+        if item.emoji is not None:
+            await self.forum.call(
+                "PUT", f"{path}/reaction", body={"emoji": item.emoji} | said, act_as=m.user
+            )
         if item.boost is not None:
             await self.forum.call(
                 "PUT", f"{path}/boost", body={"body": item.boost} | said, act_as=m.user

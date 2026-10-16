@@ -29,8 +29,8 @@ REACTIONS = {
     "mouse": "鼠鼠的自嘲和共鸣",
 }
 REACTION_CHOICES = "；".join(f"{name} {says}" for name, says in REACTIONS.items())
-# A boost is a few words; anything longer is a reply.
-BOOST_CHARS = 8
+# The forum's longest boost.
+BOOST_CHARS = 16
 
 
 # ---- Organizing a segment
@@ -44,8 +44,8 @@ ORGANIZE = f"""你在帮一个保研交流 QQ 群整理论坛帖子。群里正�
 - 提问（question）：在请教这些方面的知识、经验、信息或建议，别人能回答、以后的人也可能会查的，都收。没人回答的也收。
 - 提问要自己能看懂、别人能回答。只有接着前文才看得懂的追问，算对应帖子的回复，类型是 reply。
 - 讨论（discussion）：没有人专门提问，但几个人围绕这些方面的一个具体的情况或话题，交换了有信息量的经验、观点或消息，以后的人也可能会查的。例如有人说起某个学校今年改了考核方式，几个人接着说各自了解到的情况。发帖人是发起这个话题的人：主楼整理他抛出话题时说的情况，标题概括讨论的是什么；其他人的发言是回复。
-- 回复（reply）：在回答、补充或讨论某个提问或讨论的，要有信息量：回答、经验、事实、有理由的看法。整理好的每一层回复都问一句：去掉这一层，看帖子的人会少知道什么吗？不会少的就不收。明确对着某一层表态、又不止几个字的话（比如"确实，我们学校也是这样"），也收成回复，reply_to 填那一层。
-- 附和、道谢、闲聊、玩笑、调侃、起哄、反问、吐槽、发泄情绪、八卦、广告都不收成回复，接在帖子后面的也不收。其中明确对着某一层的表态，收成回应或短评（见下）。
+- 回复（reply）：在回答、补充或讨论某个提问或讨论的，要有信息量：回答、经验、事实、有理由的看法。整理好的每一层回复都问一句：去掉这一层，看帖子的人会少知道什么吗？不会少的就不收。明确对着某一层表态、又带出了自己的信息的话（比如"确实，我们学校也是这样"），也收成回复，reply_to 填那一层。
+- 附和、道谢、闲聊、玩笑、调侃、起哄、反问、吐槽、发泄情绪、八卦、广告都不收成回复，接在帖子后面的也不收。其中明确对着某一层说的（广告除外），收成回应或短评（见下）。
 - 以玩笑和调侃为主、没几句实在内容的讨论，不开帖子；里面有实在内容的几句，可以作为别的帖子的回复。
 
 ## 开不开新帖子
@@ -83,11 +83,11 @@ ORGANIZE = f"""你在帮一个保研交流 QQ 群整理论坛帖子。群里正�
 - 原文里的美元符号写成 \\$；不是要高亮、剧透的 == 和 ||，写成 \\=\\= 和 \\|\\|。
 
 ## 回应和短评
-群里对某一层（主楼或者任何一层回复）的表态，在论坛上就是给那一层点表情、留短评，要像论坛上的帖子一样都还原出来。
-- 回应（emoji）：一条消息只要对某一层表达了赞同、喜欢、感谢、好笑、惊讶、佩服、恭喜、安慰、疑惑、难过这类情绪，就给那一层加上这个人的回应，从下面选最贴切的一个：{REACTION_CHOICES}。这条消息别的内容照常整理，有信息量的仍然收成回复，回应是另外加上的。
-- 短评（boost）：只有几个字、整句就是表态的话，比如"确实""有道理""学到了""同问""感谢分享"，作为短评留在那一层下面，照抄原话，不超过 {BOOST_CHARS} 个字。不止几个字的，按上面收成回复，不作短评。只是 "+1"、一个表情这样的，只给回应，boost 为 null。
+群里对某一层（主楼或者任何一层回复）的接话，在论坛上就是给那一层点表情、留短评，要像论坛上的帖子一样都还原出来，热热闹闹的才像真人在聊。
+- 回应（emoji）：一条消息只要对某一层表达了赞同、喜欢、感谢、好笑、惊讶、佩服、恭喜、安慰、疑惑、难过这类情绪，就给那一层加上这个人的回应，从下面选最贴切的一个：{REACTION_CHOICES}。这条消息别的内容照常整理，有信息量的仍然收成回复，回应是另外加上的。没有这些情绪的，emoji 为 null。
+- 短评（boost）：对某一层的接话，只要算不上正经回复，就作为短评留在那一层下面：附和、表态（"确实""有道理""同问"）、玩笑、调侃、起哄、感叹、吐槽都算，照抄原话，不超过 {BOOST_CHARS} 个字。有信息量、算得上正经回复的，按上面收成回复，不作短评；不是正经回复、又超过 {BOOST_CHARS} 个字的，不收。只是 "+1"、一个表情这样的，只给回应，boost 为 null。
 - 只收明确对着某一层的：引用了那一层的消息、@ 了那一层的作者，或者紧接着那一层的话说的。对不上具体哪一层的不收。不能回应自己的那一层。
-- 起哄、调侃、阴阳怪气的不收。收成短评的消息不再收进帖子或回复。
+- 骂人、人身攻击、广告不收。收成短评的消息不再收进帖子或回复。
 
 ## 跟进中的帖子
 - 接着讨论、追问、补充它们的，是回复（reply）或更新（edit），不是新的帖子。
@@ -206,7 +206,7 @@ ORGANIZE_SCHEMA = {
                     "properties": {
                         "message": {"type": "integer"},
                         "post": {"type": "string"},
-                        "emoji": {"type": "string", "enum": list(REACTIONS)},
+                        "emoji": {"type": ["string", "null"], "enum": [*REACTIONS, None]},
                         "boost": nullable("string"),
                     },
                     "required": ["message", "post", "emoji", "boost"],
@@ -396,7 +396,7 @@ class Reaction:
 
     message: Message
     post: str
-    emoji: str
+    emoji: str | None
     boost: str | None
 
 
@@ -595,16 +595,19 @@ def check(
         if post not in floors and post not in asked and post not in answered:
             plan.dropped.append(f"{what}: unknown post {post}")
             continue
-        if item.get("emoji") not in REACTIONS:
-            plan.dropped.append(f"{what}: unknown emoji {item.get('emoji')}")
+        emoji = item.get("emoji")
+        if emoji is not None and emoji not in REACTIONS:
+            plan.dropped.append(f"{what}: unknown emoji {emoji}")
             continue
         boost = item.get("boost")
         boost = boost.strip() if isinstance(boost, str) else ""
         if m.floor is not None or n in taken:
             # Said more, which is in a floor: the reaction goes besides it, the words not twice.
             boost = ""
+        boost = boost if 0 < len(boost) <= BOOST_CHARS else None
+        if emoji is None and boost is None:
+            plan.dropped.append(f"{what}: nothing to leave")
+            continue
         taken.add(n)
-        plan.reactions.append(
-            Reaction(m, post, item["emoji"], boost if 0 < len(boost) <= BOOST_CHARS else None)
-        )
+        plan.reactions.append(Reaction(m, post, emoji, boost))
     return plan

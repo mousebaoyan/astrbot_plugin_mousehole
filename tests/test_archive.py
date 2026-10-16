@@ -146,6 +146,22 @@ async def test_thanks_and_me_too_become_reactions_and_boosts_as_said_in_the_grou
     assert (opening.created_at, reply.created_at) == (message(1, 0).time, message(3, 0).time)
 
 
+async def test_a_joke_at_a_floor_is_a_boost_without_a_reaction(setup):
+    react = [
+        {"message": 4, "post": "N2", "emoji": None, "boost": "这下真得卷起来了"},
+        {"message": 5, "post": "N2", "emoji": None, "boost": None},
+    ]
+    s = setup(Script({"new": [QUESTION, ANSWER], "edit": [], "react": react}))
+    report = await s.batch(
+        *first_batch(),
+        message(4, OTHER, "这下真得卷起来了", reply=3),
+        message(5, ASKER, "嗯", reply=3),
+    )
+    reply = thread_of(s).posts[1]
+    assert (reply.reactions, reply.boosts) == ({}, {OTHER: "这下真得卷起来了"})
+    assert report["dropped"] == ["react #5: nothing to leave"]
+
+
 async def test_what_the_asker_adds_later_rewrites_the_opening_and_its_title(setup):
     edit = {"post": "Q1", "messages": [4], "title": "rank 10% 预推免两批能都报吗", "body": "新正文"}
     s = await asked(setup, {"new": [], "edit": [edit]})
