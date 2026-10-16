@@ -258,6 +258,8 @@ def main() -> None:
     parser.add_argument("--batches", type=int, help="每个 worker 最多收这么多批，先小范围试时用")
     parser.add_argument("--off-peak", action="store_true", help="避开 Step Plan 的高峰时段")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    # Not every request it makes.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     asyncio.run(history(parser.parse_args()))
 
 
