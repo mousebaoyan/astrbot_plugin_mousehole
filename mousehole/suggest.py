@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from collections import Counter
 from collections.abc import Callable
@@ -25,6 +26,13 @@ QUESTION_WORDS = (
     "为什么", "为啥", "能不能", "可不可以", "是不是", "有没有", "要不要", "会不会", "求",
 )  # fmt: skip
 MIN_CHARS = 6
+# Asked of someone (你, not 你们): between people, which no thread answers.
+OF_SOMEONE = re.compile("你(?!们)")
+# Candidates for a question, by meaning alone and only those this alike: on October's messages
+# against 144 threads, 0.6 let through 30 questions a day, most of them chatter, and 0.65 seven,
+# a few asked again; the literal search would bring in most of the chatter.
+CANDIDATES = 3
+SIMILARITY = 0.65
 # Replies a group gets a round at most, so that the bot doesn't flood it.
 REPLIES_A_ROUND = 2
 # Seconds before a thread is told to a group again.
@@ -32,7 +40,11 @@ AGAIN_AFTER = 6 * 3600
 
 
 def asks(text: str) -> bool:
-    return len(text) >= MIN_CHARS and any(w in text for w in QUESTION_WORDS)
+    return (
+        len(text) >= MIN_CHARS
+        and any(w in text for w in QUESTION_WORDS)
+        and not OF_SOMEONE.search(text)
+    )
 
 
 class Suggest:
@@ -110,7 +122,7 @@ class Suggest:
         """The threads that may answer it: with replies, not the asker's own, not told lately."""
         asker = await self.user(m.user)
         found = []
-        for thread in await self.index.candidates(text_of(m), ""):
+        for thread in await self.index.nearest(text_of(m), CANDIDATES, SIMILARITY):
             if (group, thread) in self.told:
                 continue
             try:

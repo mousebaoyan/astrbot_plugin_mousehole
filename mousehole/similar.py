@@ -94,15 +94,19 @@ class Index:
         self.ids, self.vectors = self.ids[keep], self.vectors[keep]
         self.save()
 
+    async def nearest(self, text: str, count: int, at_least: float) -> list[int]:
+        """The threads most like the text in meaning, as like as `at_least` at least."""
+        if not len(self.ids):
+            return []
+        query = normalized(await self.embed([text]))[0]
+        similarity = self.vectors @ query
+        return [
+            int(self.ids[i]) for i in np.argsort(-similarity)[:count] if similarity[i] >= at_least
+        ]
+
     async def candidates(self, title: str, body: str) -> list[int]:
         """Threads that may ask the same: the semantically nearest first, then literal matches."""
-        found: list[int] = []
-        if len(self.ids):
-            query = normalized(await self.embed([text_of(title, body)]))[0]
-            similarity = self.vectors @ query
-            for i in np.argsort(-similarity)[:SEMANTIC]:
-                if similarity[i] >= self.min_similarity:
-                    found.append(int(self.ids[i]))
+        found = await self.nearest(text_of(title, body), SEMANTIC, self.min_similarity)
         text = f"{title}\n{body}"[:2000]
         literal = await self.forum.call("GET", "/search/similar", params={"text": text})
         for item in literal["items"][:LITERAL]:
