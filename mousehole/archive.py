@@ -431,7 +431,9 @@ class Archive:
                 log.exception("Reading the history of group %s failed", group)
             for r in sorted(missed.values(), key=lambda r: r["time"]):
                 await self.add(group, Message.from_onebot(r), r["self_id"])
-            log.info("Read back %d messages of group %s, %d of them missed", read, group, len(missed))
+            log.info(
+                "Read back %d messages of group %s, %d of them missed", read, group, len(missed)
+            )
 
     async def wait_until(self, hours: tuple[int, ...]) -> None:
         """Till the next of these hours o'clock by the wall clock, which goes on while the
