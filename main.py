@@ -176,7 +176,8 @@ class Mousehole(Star):
         """A page of the group's history from NapCat, up to the message `before` or the latest."""
         params = {"group_id": str(group), "count": HISTORY_PAGE}
         if before is not None:
-            params["message_seq"] = str(before)
+            # NapCat reads on from `message_seq` to the newer messages unless reversed.
+            params |= {"message_seq": str(before), "reverse_order": True}
         return (await self.qq.call("get_group_msg_history", **params))["messages"]
 
     @filter.on_platform_loaded()
