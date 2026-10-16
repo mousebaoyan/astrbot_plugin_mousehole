@@ -412,9 +412,11 @@ class Archive:
             heard = {m.id for m in kept} | {(m.user, int(m.time)) for m in kept}
             missed: dict[int, dict] = {}
             before = None
+            read = 0
             try:
                 while True:
                     page = sorted(await self.history(group, before), key=lambda r: r["time"])
+                    read += len(page)
                     for r in page:
                         said = (r["user_id"], int(r["time"]))
                         if r["time"] >= since and not {r["message_id"], said} & heard:
@@ -428,8 +430,7 @@ class Archive:
                 log.exception("Reading the history of group %s failed", group)
             for r in sorted(missed.values(), key=lambda r: r["time"]):
                 await self.add(group, Message.from_onebot(r), r["self_id"])
-            if missed:
-                log.info("Took in %d messages group %s had that were missed", len(missed), group)
+            log.info("Read back %d messages of group %s, %d of them missed", read, group, len(missed))
 
     async def wait_until(self, hours: tuple[int, ...]) -> None:
         """Till the next of these hours o'clock by the wall clock, which goes on while the
