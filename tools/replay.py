@@ -17,7 +17,7 @@ from pathlib import Path
 import httpx
 
 from mousehole import judge
-from mousehole.archive import BATCH_HOURS, SUMMARY_HOUR, Archive, Message, Tuning, until
+from mousehole.archive import ROUND, SUMMARY_HOUR, Archive, Message, Tuning, until
 from mousehole.llm import LLM, Embedder, Settings, read
 from mousehole.similar import Index
 from tools.fake_forum import FakeForum, Thread, bigrams
@@ -222,8 +222,8 @@ async def replay(args: argparse.Namespace) -> None:
         summary = summary_md(fake, shown, kept, reports, sent, tuning, cache)
         (out / "summary.md").write_text(summary, encoding="utf-8")
 
-    async def batch() -> None:
-        archive.start_batch()
+    async def batch(everything: bool = False) -> None:
+        archive.start_round(everything)
         async with aclosing(archive.batch()) as segments:
             async for report in segments:
                 reports.append(report)
@@ -239,19 +239,19 @@ async def replay(args: argparse.Namespace) -> None:
                 if enough():
                     return
 
-    # Batches and summaries at the hours the messages came, as the plugin would have.
+    # Rounds and summaries at the times the messages came, as the plugin would have.
     if messages:
         first = messages[0][0].time
-        next_batch = first + until(BATCH_HOURS, first)
+        next_round = first + ROUND
         next_summary = first + until((SUMMARY_HOUR,), first)
     for m, _, _ in messages:
         if enough():
             break
-        while min(next_batch, next_summary) <= m.time and not enough():
-            if next_batch < next_summary:
-                now = next_batch
+        while min(next_round, next_summary) <= m.time and not enough():
+            if next_round < next_summary:
+                now = next_round
                 await batch()
-                next_batch += until(BATCH_HOURS, next_batch)
+                next_round += ROUND
             else:
                 now = next_summary
                 await archive.send_summary()
@@ -259,7 +259,7 @@ async def replay(args: argparse.Namespace) -> None:
         now = m.time
         await archive.add(group, m, bot)
     if not enough():
-        await batch()
+        await batch(everything=True)
     # What the batches so far would have told, though the morning hadn't come.
     await archive.send_summary()
     data.cleanup()
@@ -351,9 +351,19 @@ def summary_md(
     again = Counter(a["how"] for r in reports for a in r.get("asked_again", []))
     dropped = Counter(reason(d) for r in reports for d in r["dropped"])
     named = sum(len(r["summary"]) for r in reports)
-    # At the night price the batches run at, with nothing cached: replay's segments go one after
-    # another as the plugin's do, but a run may take its answers from llm-cache.jsonl.
-    cost = round(sum(credits(c["input_tokens"], c["output_tokens"], 0) for c in calls), 1)
+    # At the price of the hour a segment's talk ended, about when the plugin would take it in, with
+    # nothing cached: replay's segments go one after another as the plugin's do, but a run may
+    # take its answers from llm-cache.jsonl.
+    cost = round(
+        sum(
+            credits(
+                c["input_tokens"], c["output_tokens"], datetime.fromtimestamp(r["times"][1]).hour
+            )
+            for r in reports
+            for c in r["llm"]
+        ),
+        1,
+    )
 
     rows = [
         ("有效消息（去掉表情、命令和 bot 的）", kept),
@@ -363,7 +373,7 @@ def summary_md(
         ("输入 token", sum(c["input_tokens"] for c in calls)),
         ("输出 token", sum(c["output_tokens"] for c in calls)),
         ("大模型耗时（秒）", round(sum(c["seconds"] for c in calls))),
-        ("ECNU 积分（夜间价，不算缓存）", cost),
+        ("ECNU 积分（按收的时段，不算缓存）", cost),
         ("新帖", len(fake.threads)),
         ("回复", sum(p.floor > 1 for p in posts) - sum(again.values())),
         ("更新", sum(len(p.revisions) for p in posts)),

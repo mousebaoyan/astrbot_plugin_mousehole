@@ -12,14 +12,12 @@ from collections.abc import Callable
 from datetime import datetime
 
 from . import judge
-from .archive import Complete, Message, Notify, plain
+from .archive import ROUND, Complete, Message, Notify, plain
 from .forum import Forum, ForumError
 from .similar import Index
 
 log = logging.getLogger("astrbot.plugin.astrbot_plugin_mousehole")
 
-# Seconds between rounds: soon enough that the asker is still there.
-ROUND = 600
 # What a message must have to be looked at as a question: no LLM is asked for the rest.
 QUESTION_WORDS = (
     "?", "？", "吗", "嘛", "呢", "怎么", "怎样", "如何", "哪", "多少", "几", "什么", "啥",

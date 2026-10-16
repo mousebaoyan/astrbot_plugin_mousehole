@@ -17,7 +17,6 @@ from pathlib import Path
 import httpx
 
 from mousehole.archive import (
-    BATCH_HOURS,
     PAUSE,
     Archive,
     Complete,
@@ -36,6 +35,9 @@ log = logging.getLogger("astrbot.plugin.astrbot_plugin_mousehole")
 
 # Batches are worked on side by side, as many as Step Plan answers at once.
 WORKERS = 5
+# Batches start at these hours: unlike the plugin, which takes a talk in once it stops, the
+# history has no hurry, and whole batches keep more talks whole in fewer calls.
+BATCH_HOURS = (4, 18)
 # Step Plan's peak hours, Beijing time on weekdays, when Step 5 Preview costs twice as much.
 PEAK = ((9, 12), (14, 18))
 
@@ -72,7 +74,7 @@ def off_peak(complete: Complete) -> Complete:
 
 
 def batches(messages: list[Message]) -> list[list[Message]]:
-    """The messages as the plugin would have taken them: in batches at BATCH_HOURS."""
+    """The messages in batches at BATCH_HOURS."""
     found: list[list[Message]] = []
     end = float("-inf")
     for m in messages:
@@ -231,7 +233,7 @@ async def archive_exports(
         await patiently(run)
         taken = 0
         for group, batch in share:
-            # As start_batch names its file.
+            # As start_round names its file.
             now = batch[-1].time
             name = f"{group}-{int(now)}"
             if name in done:
@@ -242,7 +244,7 @@ async def archive_exports(
                 if archive.worth(m, bots[group]):
                     await upload(forum, m, pictures)
                     archive.wait(group, m.record())
-            archive.start_batch()
+            archive.start_round(everything=True)
             with done_file.open("a") as f:
                 f.write(name + "\n")
             taken += 1

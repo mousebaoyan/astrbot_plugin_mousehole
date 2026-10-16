@@ -73,7 +73,7 @@ class Setup:
             await self.archive.refresh_taxonomy()
         for m in messages:
             await self.archive.add(GROUP, m, BOT)
-        self.archive.start_batch()
+        self.archive.start_round(everything=True)
         self.now += 1
         return [report async for report in self.archive.batch()][-1]
 

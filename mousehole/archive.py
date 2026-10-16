@@ -1,5 +1,5 @@
-"""Auto-archiving (design §8). Group messages wait on disk for the day's two batches; the LLM
-organizes what each segment of a batch has worth keeping into threads and floors under their
+"""Auto-archiving (design §8). Group messages wait on disk till the talk stops; the LLM organizes
+what each segment of a round has worth keeping into threads and floors under their
 writers' names. The questions stay followed, so later answers and additions find their place,
 and each morning a summary in the group names the threads."""
 
@@ -60,12 +60,19 @@ class Tuning:
 ORGANIZE_BEFORE = 20
 # Messages kept per group before the segment worked on, for context and quotes.
 KEPT = 1000
-# Batches start at these hours, both at ECNU's night price; the summary goes at SUMMARY_HOUR.
-BATCH_HOURS = (4, 18)
+# Seconds between looks at the messages waiting, and between rounds of 猜你想问.
+ROUND = 600
+# A group's waiting messages are taken in once it has been QUIET for that many seconds, if
+# LEAST of them wait or the first has waited LONGEST: a few don't make a call of their own. At
+# BACKLOG, with the talk going on, those up to a lull are (design §8.1).
+QUIET = 1800
+LEAST = 20
+LONGEST = 3 * 3600
+BACKLOG = 150
 SUMMARY_HOUR = 8
 # Threads a summary names, so that it @s few and doesn't flood the group.
 SUMMARY_ITEMS = 10
-# Seconds before a batch the LLM, the embedding model or the forum couldn't be had for, or a
+# Seconds before a round the LLM, the embedding model or the forum couldn't be had for, or a
 # summary that couldn't be sent, is tried again.
 PAUSE = 600
 NEW_TAGS_PER_DAY = 10
@@ -112,8 +119,25 @@ def until(hours: tuple[int, ...], now: float) -> float:
     return min(t for t in times if t > now) - now
 
 
+def to_take(messages: list[Message], now: float) -> int:
+    """How many of a group's waiting messages are taken in now (design §8.1)."""
+    if not messages:
+        return 0
+    if now - messages[-1].time >= QUIET and (
+        len(messages) >= LEAST or now - messages[0].time >= LONGEST
+    ):
+        return len(messages)
+    if len(messages) < BACKLOG:
+        return 0
+    # Where the group was quiet longest, at least LEAST taken and the newest half left.
+    return max(
+        range(LEAST, len(messages) - BACKLOG // 2 + 1),
+        key=lambda i: messages[i].time - messages[i - 1].time,
+    )
+
+
 def segments(messages: list[Message], most: int) -> list[list[Message]]:
-    """A batch cut where the group was quiet longest until no piece holds more than `most`, so a
+    """A round cut where the group was quiet longest until no piece holds more than `most`, so a
     talk mostly stays whole; then neighbours joined while they fit, so the night's few messages
     don't each make a call (design §8.1)."""
     pieces: list[list[Message]] = []
@@ -291,10 +315,10 @@ class Archive:
         if self.summary_file.exists():
             saved = json.loads(self.summary_file.read_text(encoding="utf-8"))
             self.summary = {int(group): entries for group, entries in saved.items()}
-        # When the last batch started and the last summary went, and the groups archived: what a
+        # Up to when each group's messages were taken in, and when the last summary went: what a
         # restart goes on from.
         self.state_file = data / "archive.json"
-        self.state: dict[str, Any] = {"batch": clock(), "summary": clock(), "groups": []}
+        self.state: dict[str, Any] = {"since": {}, "summary": clock()}
         if self.state_file.exists():
             self.state = json.loads(self.state_file.read_text(encoding="utf-8"))
         self.chats: dict[int, Chat] = {}
@@ -314,10 +338,10 @@ class Archive:
         return any(shows(s) for s in m.segments)
 
     async def add(self, group: int, m: Message, bot: int) -> None:
-        """Kept on disk for the next batch, its pictures copied to the forum now: QQ's links
+        """Kept on disk for a round to take in, its pictures copied to the forum now: QQ's links
         expire within hours (design §8.1)."""
-        if group not in self.state["groups"]:
-            self.state["groups"].append(group)
+        if str(group) not in self.state["since"]:
+            self.state["since"][str(group)] = self.clock()
             self.save_state()
         if not self.worth(m, bot):
             return
@@ -340,7 +364,7 @@ class Archive:
         §8.7)."""
         self.wait(group, {"recall": message_id})
         chat = self.chats.get(group)
-        # In the batch being worked on.
+        # In the round being worked on.
         m = chat.by_id.get(message_id) if chat else None
         if m is not None:
             m.recalled = True
@@ -355,32 +379,31 @@ class Archive:
         await asyncio.gather(self.work_batches(), self.send_summaries())
 
     async def work_batches(self) -> None:
-        # A batch a restart broke off is gone on with first, and one missed while the plugin
-        # was down starts right away.
+        # A round a restart broke off is gone on with first.
         while True:
             try:
-                await self.ready()
                 await self.catch_up()
-                if self.due("batch", BATCH_HOURS):
-                    self.start_batch()
-                async for report in self.batch():
-                    # What the LLM wrote stays out of the logs: it is the members' words.
-                    tokens = sum(c["input_tokens"] + c["output_tokens"] for c in report["llm"])
-                    log.info(
-                        "Archive %s of group %s: %d tokens, done %s, dropped %s",
-                        report["numbers"],
-                        report["group"],
-                        tokens,
-                        report["done"],
-                        report["dropped"],
-                    )
+                self.start_round()
+                if any(self.batches.glob("*.jsonl")):
+                    await self.ready()
+                    async for report in self.batch():
+                        # What the LLM wrote stays out of the logs: it is the members' words.
+                        tokens = sum(c["input_tokens"] + c["output_tokens"] for c in report["llm"])
+                        log.info(
+                            "Archive %s of group %s: %d tokens, done %s, dropped %s",
+                            report["numbers"],
+                            report["group"],
+                            tokens,
+                            report["done"],
+                            report["dropped"],
+                        )
             except Exception as e:
                 if unavailable(e):
                     log.warning("Archiving waits %d minutes: %r", PAUSE // 60, e)
                     await asyncio.sleep(PAUSE)
                     continue
                 log.exception("Archiving failed")
-            await self.wait_until(BATCH_HOURS)
+            await asyncio.sleep(ROUND)
 
     async def send_summaries(self) -> None:
         while True:
@@ -404,12 +427,11 @@ class Archive:
 
     async def catch_up(self) -> None:
         """Messages the plugin didn't hear, while it or AstrBot was down or cut off from NapCat,
-        read back from each group's history since the batch began (design §8.1)."""
+        read back from each group's history since its last round took in (design §8.1)."""
         if self.history is None:
             return
-        since = self.state["batch"]
-        waiting = {int(path.stem) for path in self.pending.glob("*.jsonl")}
-        for group in sorted(waiting | set(self.state["groups"])):
+        for key, since in self.state["since"].items():
+            group = int(key)
             path = self.pending / f"{group}.jsonl"
             kept = load(path) if path.exists() else []
             # By ID, and by who and when as well, should the history's IDs not be the events'.
@@ -423,14 +445,14 @@ class Archive:
                     read += len(page)
                     for r in page:
                         said = (r["user_id"], int(r["time"]))
-                        if r["time"] >= since and not {r["message_id"], said} & heard:
+                        if r["time"] > since and not {r["message_id"], said} & heard:
                             missed[r["message_id"]] = r
-                    if not page or page[0]["time"] < since or page[0]["message_id"] == before:
+                    if not page or page[0]["time"] <= since or page[0]["message_id"] == before:
                         break
                     before = page[0]["message_id"]
                     await asyncio.sleep(HISTORY_GAP)
             except Exception:
-                # The batch goes on with what was heard and what was read back so far.
+                # The round goes on with what was heard and what was read back so far.
                 log.exception("Reading the history of group %s failed", group)
             for r in sorted(missed.values(), key=lambda r: r["time"]):
                 await self.add(group, Message.from_onebot(r), r["self_id"])
@@ -460,13 +482,26 @@ class Archive:
         self.boards = [b for b in boards if b["post_role"] == "user"]
         self.tags = [t["name"] for t in (await self.forum.call("GET", "/tags"))["items"]]
 
-    def start_batch(self) -> None:
-        """What came since the last batch, to be archived now; what comes meanwhile waits for
-        the next. A batch not finished stays, in a file of its own."""
+    def start_round(self, everything: bool = False) -> None:
+        """Each group's waiting messages that are due, or all of them, to be archived now; the
+        rest and what comes meanwhile wait on. A round not finished stays, in a file of its
+        own."""
         stamp = int(self.clock())
         for path in self.pending.glob("*.jsonl"):
-            path.rename(self.batches / f"{path.stem}-{stamp}.jsonl")
-        self.state["batch"] = self.clock()
+            messages = load(path)
+            count = len(messages) if everything else to_take(messages, self.clock())
+            if not count:
+                continue
+            # Written before the rest, so that a crash between leaves them twice, not lost:
+            # the idempotency keys keep them from being posted twice.
+            write(
+                self.batches / f"{path.stem}-{stamp}.jsonl", [m.record() for m in messages[:count]]
+            )
+            if rest := [m.record() for m in messages[count:]]:
+                write(path, rest)
+            else:
+                path.unlink()
+            self.state["since"][path.stem] = messages[count - 1].time
         self.save_state()
 
     async def batch(self) -> AsyncIterator[dict[str, Any]]:

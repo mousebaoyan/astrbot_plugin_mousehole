@@ -4,7 +4,19 @@ from datetime import datetime
 import pytest
 from conftest import BOT, GROUP, Script, message
 
-from mousehole.archive import BATCH_HOURS, Message, Tuning, content, load, segments, until
+from mousehole.archive import (
+    BACKLOG,
+    LEAST,
+    LONGEST,
+    QUIET,
+    Message,
+    Tuning,
+    content,
+    load,
+    segments,
+    to_take,
+    until,
+)
 from mousehole.llm import Truncated, Unavailable
 
 TUNING = Tuning()
@@ -65,7 +77,7 @@ async def test_messages_wait_on_disk_with_their_pictures_copied_and_chatter_left
     await a.add(GROUP, message(6, ASKER, segments=[picture]), BOT)
     await a.add(GROUP, message(7, ASKER, "发错了"), BOT)
     a.recall(GROUP, 7)
-    a.start_batch()
+    a.start_round(everything=True)
     [path] = (tmp_path / "batch").iterdir()
     assert [(m.id, len(m.uploads)) for m in load(path)] == [(1, 0), (6, 1)]
     assert s.forum.uploads == 1
@@ -84,13 +96,38 @@ def test_a_batch_is_cut_where_the_group_was_quiet_longest_and_small_pieces_joine
     assert cut(at(0, 1), 50) == [[0, 1]]
 
 
-def test_batches_start_at_four_and_eighteen():
+def test_the_next_of_some_hours_is_found_across_midnight():
     def at(hour, minute=0):
         return datetime(2026, 10, 15, hour, minute).timestamp()
 
-    assert until(BATCH_HOURS, at(17, 30)) == 1800
-    assert until(BATCH_HOURS, at(18)) == 10 * 3600
-    assert until(BATCH_HOURS, at(3)) == 3600
+    assert until((4, 18), at(17, 30)) == 1800
+    assert until((4, 18), at(18)) == 10 * 3600
+    assert until((4, 18), at(3)) == 3600
+
+
+def test_a_group_is_taken_in_once_its_talk_stops_with_enough_said():
+    def said(*times):
+        return [Message(i, ASKER, t, []) for i, t in enumerate(times)]
+
+    talk = said(*range(LEAST))
+    end = talk[-1].time
+    assert to_take(talk, end + QUIET - 1) == 0
+    assert to_take(talk, end + QUIET) == LEAST
+    # A few wait for more, but not for ever.
+    assert to_take(talk[:3], end + QUIET) == 0
+    assert to_take(talk[:3], LONGEST) == 3
+    assert to_take([], LONGEST) == 0
+
+
+def test_a_backlog_is_taken_up_to_a_lull_leaving_the_talk_going_on():
+    # Quiet longest after the 30th, and longer still after the 2nd, which would take too few,
+    # and after the 140th, which would cut into the talk going on.
+    times = [*range(BACKLOG)]
+    gaps = {2: 500, 30: 100, 140: 900}
+    times = [t + sum(g for i, g in gaps.items() if n >= i) for n, t in enumerate(times)]
+    talk = [Message(i, ASKER, t, []) for i, t in enumerate(times)]
+    assert to_take(talk, talk[-1].time) == 30
+    assert to_take(talk[:-1], talk[-1].time) == 0
 
 
 async def test_a_batch_a_restart_broke_off_goes_on_from_the_next_segment(setup, tmp_path):
@@ -98,7 +135,7 @@ async def test_a_batch_a_restart_broke_off_goes_on_from_the_next_segment(setup, 
     await s.archive.refresh_taxonomy()
     for i in range(1, 5):
         await s.archive.add(GROUP, message(i * 100, ASKER, f"第 {i} 条"), BOT)
-    s.archive.start_batch()
+    s.archive.start_round(everything=True)
     async with aclosing(s.archive.batch()) as batch:
         await anext(batch)
 
@@ -292,23 +329,35 @@ async def test_messages_missed_while_down_are_read_back_from_the_groups_history(
         return [onebot(m) for m in pages[before]]
 
     s = setup(Script(), history=history)
-    s.archive.state["batch"] = message(5, 0).time
+    s.archive.state["since"][str(GROUP)] = message(5, 0).time
     await s.archive.add(GROUP, heard, BOT)
     await s.archive.catch_up()
     pending = load(s.archive.pending / f"{GROUP}.jsonl")
     assert [m.id for m in pending] == [10, 11, 12]
-    # Back page by page till the batch's start.
+    # Back page by page till what the last round took in.
     assert asked == [(GROUP, None), (GROUP, 99)]
 
 
-async def test_a_batch_or_summary_missed_while_down_goes_right_away(setup):
+async def test_a_summary_missed_while_down_goes_right_away(setup):
     s = setup(Script())
     day = datetime(2026, 10, 16).timestamp()
-    s.archive.state |= {"batch": day + 4 * 3600, "summary": day - 16 * 3600}
-    s.now = day + 17 * 3600
-    assert (s.archive.due("batch", BATCH_HOURS), s.archive.due("summary", (8,))) == (False, True)
-    s.now = day + 19 * 3600
-    assert s.archive.due("batch", BATCH_HOURS)
+    s.archive.state["summary"] = day - 16 * 3600
+    s.now = day + 7 * 3600
+    assert not s.archive.due("summary", (8,))
+    s.now = day + 9 * 3600
+    assert s.archive.due("summary", (8,))
+
+
+async def test_a_round_takes_in_what_is_due_and_leaves_the_rest_waiting(setup, tmp_path):
+    s = setup(Script())
+    for i in range(BACKLOG):
+        await s.archive.add(GROUP, message(i * 10 + (500 if i >= 40 else 0), ASKER, "聊"), BOT)
+    s.now = message(BACKLOG * 10 + 500, 0).time
+    s.archive.start_round()
+    [taken] = (tmp_path / "batch").iterdir()
+    assert len(load(taken)) == 40
+    assert len(load(s.archive.pending / f"{GROUP}.jsonl")) == BACKLOG - 40
+    assert s.archive.state["since"][str(GROUP)] == message(390, 0).time
 
 
 async def test_a_segment_a_service_failed_waits_in_its_batch_to_be_tried_again(setup):
@@ -318,7 +367,7 @@ async def test_a_segment_a_service_failed_waits_in_its_batch_to_be_tried_again(s
     await s.archive.refresh_taxonomy()
     await s.archive.add(GROUP, message(1, ASKER, "预推免两批能都报吗"), BOT)
     await s.archive.add(GROUP, message(1000, OTHER, "哈哈"), BOT)
-    s.archive.start_batch()
+    s.archive.start_round(everything=True)
     with pytest.raises(Unavailable):
         async for _ in s.archive.batch():
             pass
@@ -333,7 +382,7 @@ async def test_a_segment_thought_too_long_over_is_split_in_halves(setup):
     await s.archive.refresh_taxonomy()
     for i in (1, 2, 100, 101):
         await s.archive.add(GROUP, message(i, ASKER, f"第 {i} 条"), BOT)
-    s.archive.start_batch()
+    s.archive.start_round(everything=True)
     reports = [r async for r in s.archive.batch()]
     assert [r["numbers"] for r in reports] == [[1, 4], [1, 2], [3, 4]]
     assert reports[0]["llm"][0]["output_tokens"] == 32768
@@ -346,7 +395,7 @@ async def test_a_message_recalled_while_its_batch_is_worked_on_is_left_out(setup
     await s.archive.refresh_taxonomy()
     await s.archive.add(GROUP, message(1, ASKER, "第一段"), BOT)
     await s.archive.add(GROUP, message(1000, ASKER, "发错了"), BOT)
-    s.archive.start_batch()
+    s.archive.start_round(everything=True)
     async for _ in s.archive.batch():
         s.archive.recall(GROUP, 1000)
     assert len(s.llm.prompts) == 1
