@@ -12,7 +12,7 @@ from typing import Any
 import httpx
 
 from .forum import Forum, ForumError
-from .qq import QQ
+from .qq import QQ, at, fill, joined, text
 from .similar import Index
 from .sync import Sync
 
@@ -28,36 +28,44 @@ FRESH = 12 * 3600
 MENTIONS = 20
 
 
-def badge_message(data: dict) -> list[dict]:
-    badge = data["badge"]
-    return [
-        {"type": "text", "data": {"text": "【鼠洞金徽章】恭喜 "}},
-        {"type": "at", "data": {"qq": str(data["user"]["qq"])}},
-        {
-            "type": "text",
-            "data": {"text": f" 得到「{badge['name']}」：{badge['description']}\n{data['url']}"},
-        },
-    ]
+def badge_message(data: dict, template: str, site: str) -> list[dict]:
+    return fill(
+        template,
+        at=[at(data["user"]["qq"])],
+        badge=data["badge"]["name"],
+        description=data["badge"]["description"],
+        url=data["url"],
+        forum=site,
+    )
 
 
-def lottery_message(data: dict) -> list[dict]:
-    def text(value: str) -> dict:
-        return {"type": "text", "data": {"text": value}}
-
-    segments = [text(f"【抽奖开奖】{data['thread']['title']}")]
+def lottery_message(data: dict, templates: dict[str, str], site: str) -> list[dict]:
+    """`templates`: the lottery settings, the message's and each prize's."""
+    items = []
     mentioned = 0
     for prize in data["prizes"]:
-        segments.append(text(f"\n{prize['name']}"))
-        if not prize["winners"]:
-            segments.append(text(" 无人中奖"))
+        winners = []
         for winner in prize["winners"]:
-            if mentioned < MENTIONS:
-                segments += [text(" "), {"type": "at", "data": {"qq": str(winner["qq"])}}]
-                mentioned += 1
-            else:
-                segments.append(text(f" {winner['display_name']}"))
-    segments.append(text(f"\n共 {data['entry_count']} 人参与\n{data['url']}"))
-    return segments
+            winners.append(
+                [at(winner["qq"])] if mentioned < MENTIONS else [text(winner["display_name"])]
+            )
+            mentioned += 1
+        items.append(
+            fill(
+                templates["item"],
+                prize=prize["name"],
+                winners=joined(winners, " ") or "无人中奖",
+                forum=site,
+            )
+        )
+    return fill(
+        templates["template"],
+        title=data["thread"]["title"],
+        items=joined(items, "\n"),
+        entries=data["entry_count"],
+        url=data["url"],
+        forum=site,
+    )
 
 
 class Events:
@@ -72,6 +80,9 @@ class Events:
         badges: bool,
         bio: bool,
         index: Index | None,
+        site: str,
+        lottery_templates: dict[str, str],
+        badge_template: str,
     ):
         """`lottery`: the groups draws are announced in, empty for the primary group, None for
         none; `badges`: whether gold badges are congratulated on, in the groups the member is
@@ -82,6 +93,9 @@ class Events:
         self.state = state
         self.lottery = lottery
         self.index = index
+        self.site = site
+        self.lottery_templates = lottery_templates
+        self.badge_template = badge_template
         types = ["member.activated"] if bio else []
         types += ["lottery.drawn"] if lottery is not None else []
         types += ["badge.granted"] if badges else []
@@ -151,7 +165,7 @@ class Events:
             case "lottery.drawn":
                 if time.time() - at > FRESH:
                     return
-                message = lottery_message(data)
+                message = lottery_message(data, self.lottery_templates, self.site)
                 for group in self.lottery or self.sync.groups[:1]:
                     await self.qq.send_group(group, message)
             case "badge.granted" if data["badge"]["tier"] == "gold":
@@ -160,7 +174,9 @@ class Events:
                 qq = data["user"]["qq"]
                 for group in self.sync.groups:
                     if qq in self.sync.roster.get(group, ()):
-                        await self.qq.send_group(group, badge_message(data))
+                        await self.qq.send_group(
+                            group, badge_message(data, self.badge_template, self.site)
+                        )
             case "thread.created" if self.index:
                 await self.index.thread_created(data["thread"]["id"])
             case "post.updated" if self.index and data["post"]["floor"] == 1:

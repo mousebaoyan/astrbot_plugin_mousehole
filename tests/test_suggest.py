@@ -1,4 +1,4 @@
-from conftest import BOT, GROUP, Script, embed, message
+from conftest import BOT, GROUP, Script, defaults, embed, message
 
 from mousehole import judge
 from mousehole.similar import Index
@@ -34,7 +34,15 @@ async def suggest_with(llm, *threads_by):
     async def notify(group, segments):
         sent.append((group, segments))
 
-    s = Suggest(client, llm, index, notify, site="https://forum.test", prefixes=["/"])
+    s = Suggest(
+        client,
+        llm,
+        index,
+        notify,
+        site="https://forum.test",
+        templates=defaults("archive"),
+        prefixes=["/"],
+    )
     return s, sent
 
 

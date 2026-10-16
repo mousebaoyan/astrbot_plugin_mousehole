@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import random
+import re
 import secrets
 import time
 from collections.abc import Awaitable, Callable
@@ -23,6 +24,38 @@ GUARD_CONFIG = {
 # NapCat has no action that makes a group album; the QQ client's own request does it, as in the
 # maintainer's digest plugin.
 ADD_ALBUM = "QunAlbum.trpc.qzone.webapp_qun_media.QunMedia.AddAlbum"
+PLACEHOLDER = re.compile(r"\{(\w+)\}")
+
+
+def text(value: str) -> dict:
+    return {"type": "text", "data": {"text": value}}
+
+
+def at(qq: int) -> dict:
+    return {"type": "at", "data": {"qq": str(qq)}}
+
+
+def merged(parts: list[object]) -> list[dict]:
+    """Texts and lists of segments as one message, the texts next to each other as one."""
+    segments: list[dict] = []
+    for part in parts:
+        for s in part if isinstance(part, list) else [text(str(part))]:
+            if s["type"] == "text" and segments and segments[-1]["type"] == "text":
+                segments[-1] = text(segments[-1]["data"]["text"] + s["data"]["text"])
+            elif s != text(""):
+                segments.append(s)
+    return segments
+
+
+def fill(template: str, **values: object) -> list[dict]:
+    """A message template from the settings (design §9): each `{name}` given becomes its text, or
+    its segments when a list; names not given are left as written, so a misspelt one shows."""
+    parts = PLACEHOLDER.split(template)
+    return merged([values.get(p, f"{{{p}}}") if i % 2 else p for i, p in enumerate(parts)])
+
+
+def joined(items: list[list[dict]], sep: str) -> list[dict]:
+    return merged([part for i, item in enumerate(items) for part in ([sep] if i else []) + [item]])
 
 
 def protobuf(*fields: tuple[int, int | str | bytes]) -> bytes:
@@ -82,10 +115,10 @@ class QQ:
     async def call(self, action: str, **params: Any) -> Any:
         return await self.platform().bot.call_action(action, **params)
 
-    async def reply(self, event: dict[str, Any], text: str) -> None:
+    async def reply(self, event: dict[str, Any], message: list[dict[str, Any]]) -> None:
         """To the chat a message came from, the group or the private one."""
         await asyncio.sleep(random.uniform(*REPLY_DELAY))
-        await self.platform().bot.send(event, text)
+        await self.platform().bot.send(event, message)
 
     async def online(self) -> bool:
         return (await self.call("get_status"))["online"]

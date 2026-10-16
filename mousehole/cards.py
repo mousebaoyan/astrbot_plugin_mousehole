@@ -10,7 +10,7 @@ from typing import Any
 
 from .archive import plain
 from .forum import Forum, ForumError
-from .qq import QQ, REPLY_DELAY
+from .qq import QQ, REPLY_DELAY, fill, joined
 
 # Threads a message gets cards for at most.
 PER_MESSAGE = 2
@@ -18,20 +18,36 @@ PER_MESSAGE = 2
 AGAIN_AFTER = 1800
 
 
-def card(t: dict[str, Any]) -> str:
-    facts = [t["author"]["display_name"]]
-    facts.append(f"{t['reply_count']} 条回复" if t["reply_count"] else "还没有回复")
-    if t["kind"] == "question":
-        facts.append("✅ 已解决" if t["solved"] else "待解答")
-    facts.append(f"{t['view_count']} 次浏览")
-    return f"「{t['board']['name']}」{t['title']}\n" + " · ".join(facts)
+def card(t: dict[str, Any], templates: dict[str, str], site: str) -> list[dict]:
+    """`templates`: the cards settings, one template for questions and one for the rest."""
+    question = t["kind"] == "question"
+    return fill(
+        templates["question" if question else "other"],
+        board=t["board"]["name"],
+        title=t["title"],
+        author=t["author"]["display_name"],
+        replies=f"{t['reply_count']} 条回复" if t["reply_count"] else "还没有回复",
+        status=("✅ 已解决" if t["solved"] else "待解答") if question else "",
+        views=t["view_count"],
+        forum=site,
+    )
 
 
 class Cards:
-    def __init__(self, forum: Forum, qq: QQ, *, site: str, clock: Callable[[], float] = time.time):
+    def __init__(
+        self,
+        forum: Forum,
+        qq: QQ,
+        *,
+        site: str,
+        templates: dict[str, str],
+        clock: Callable[[], float] = time.time,
+    ):
         self.forum = forum
         self.qq = qq
-        self.link = re.compile(re.escape(site.rstrip("/")) + r"/t/(\d+)")
+        self.site = site.rstrip("/")
+        self.templates = templates
+        self.link = re.compile(re.escape(self.site) + r"/t/(\d+)")
         self.clock = clock
         # When each (group, thread) got its card last.
         self.shown: dict[tuple[int, int], float] = {}
@@ -54,15 +70,12 @@ class Cards:
                     raise
                 continue
             if t["status"] == "visible":
-                cards.append(card(t))
+                cards.append(card(t, self.templates, self.site))
                 self.shown[group, thread] = now
         if not cards:
             return
         await asyncio.sleep(random.uniform(*REPLY_DELAY))
         await self.qq.send_group(
             group,
-            [
-                {"type": "reply", "data": {"id": str(raw["message_id"])}},
-                {"type": "text", "data": {"text": "\n\n".join(cards)}},
-            ],
+            [{"type": "reply", "data": {"id": str(raw["message_id"])}}, *joined(cards, "\n\n")],
         )

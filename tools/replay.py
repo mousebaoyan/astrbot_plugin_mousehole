@@ -198,6 +198,7 @@ async def replay(args: argparse.Namespace) -> None:
         data=Path(data.name),
         prefixes=["/"],
         site=SITE,
+        templates=config["archive"],
         notify=told,
         tuning=tuning,
         clock=lambda: now,

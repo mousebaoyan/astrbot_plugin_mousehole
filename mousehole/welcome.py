@@ -6,7 +6,7 @@ import logging
 import time
 from collections.abc import Callable
 
-from .qq import QQ
+from .qq import QQ, at, fill, joined
 from .sync import Sync
 
 log = logging.getLogger("astrbot.plugin.astrbot_plugin_mousehole")
@@ -19,17 +19,7 @@ MENTIONS = 20
 
 
 def welcome_message(template: str, users: list[int], site: str) -> list[dict]:
-    """The template with `{at}` as @ for each newcomer and `{forum}` as the forum's address."""
-    at = []
-    for user in users:
-        at += [{"type": "at", "data": {"qq": str(user)}}, {"type": "text", "data": {"text": " "}}]
-    segments = []
-    for i, part in enumerate(template.replace("{forum}", site).split("{at}")):
-        if i:
-            segments += at[:-1]
-        if part:
-            segments.append({"type": "text", "data": {"text": part}})
-    return segments
+    return fill(template, at=joined([[at(u)] for u in users], " "), forum=site)
 
 
 class Welcome:

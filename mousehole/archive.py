@@ -22,6 +22,7 @@ import httpx
 from . import judge
 from .forum import Forum, ForumError
 from .llm import Truncated, Unavailable
+from .qq import at, fill, joined
 from .similar import Index
 
 # The logger AstrBot sets up for the plugin, which its handlers need the fields of.
@@ -288,16 +289,18 @@ class Archive:
         data: Path,
         prefixes: list[str],
         site: str,
+        templates: dict[str, str],
         notify: Notify | None = None,
         history: History | None = None,
         tuning: Tuning | None = None,
         clock: Callable[[], float] = time.time,
     ):
         """`data` is where messages wait and the summary is kept; `site` is the forum's address
-        for links in the summary; without `notify` none is sent, without `history` messages
-        missed are not looked for."""
+        for links in the summary, `templates` the archive settings with its wording; without
+        `notify` none is sent, without `history` messages missed are not looked for."""
         self.forum = forum
         self.site = site.rstrip("/")
+        self.templates = templates
         self.notify = notify
         self.history = history
         self.complete = complete
@@ -716,7 +719,7 @@ class Archive:
             # Segments archived while it goes are for the next summary.
             count = len(entries)
             try:
-                await self.notify(group, summary_message(entries, self.site))
+                await self.notify(group, summary_message(entries, self.site, self.templates))
             except Exception:
                 log.exception("Sending the archive summary to group %s failed", group)
                 sent = False
@@ -1084,17 +1087,22 @@ class Archive:
         return await self.thread_question(chat, names[same])
 
 
-def summary_message(entries: list[dict], site: str) -> list[dict]:
-    """The summary (design §8.8): each new thread's writer @ed with the thread."""
-
-    def text(value: str) -> dict:
-        return {"type": "text", "data": {"text": value}}
-
-    segments = [text(f"鼠洞收录了群里的 {len(entries)} 个帖子：")]
-    for e in entries[:SUMMARY_ITEMS]:
-        said = f"（讨论）{e['title']}" if e["kind"] == "discussion" else e["title"]
-        user = {"type": "at", "data": {"qq": str(e["user"])}}
-        segments += [text("\n"), user, text(f" {said}\n{site}/t/{e['thread']}")]
+def summary_message(entries: list[dict], site: str, templates: dict[str, str]) -> list[dict]:
+    """The summary (design §8.8): each new thread's writer @ed with the thread. `templates`: the
+    archive settings, with the summary's, each thread's and the line for the rest."""
+    items = [
+        fill(
+            templates["summary_item"],
+            at=[at(e["user"])],
+            kind="（讨论）" if e["kind"] == "discussion" else "",
+            title=e["title"],
+            url=f"{site}/t/{e['thread']}",
+            forum=site,
+        )
+        for e in entries[:SUMMARY_ITEMS]
+    ]
     if len(entries) > SUMMARY_ITEMS:
-        segments.append(text(f"\n还有 {len(entries) - SUMMARY_ITEMS} 个，到鼠洞上看：{site}"))
-    return segments
+        items.append(
+            fill(templates["summary_more"], count=len(entries) - SUMMARY_ITEMS, forum=site)
+        )
+    return fill(templates["summary"], count=len(entries), items=joined(items, "\n"), forum=site)

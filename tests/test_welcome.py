@@ -1,3 +1,4 @@
+from mousehole.qq import at, fill, text
 from mousehole.welcome import GAP, MENTIONS, WAIT, Welcome, welcome_message
 
 GROUP = 100200300
@@ -13,6 +14,10 @@ def test_the_template_ats_each_newcomer_and_names_the_forum():
         {"type": "at", "data": {"qq": "2"}},
         {"type": "text", "data": {"text": " 来到鼠群\n鼠洞：https://bbs.test"}},
     ]
+
+
+def test_names_a_template_is_not_given_are_left_as_written():
+    assert fill("{at}：{titel}", at=[at(1)]) == [at(1), text("：{titel}")]
 
 
 async def test_newcomers_share_welcomes_hours_apart_and_members_of_another_group_get_none():

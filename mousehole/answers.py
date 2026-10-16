@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .forum import Forum
-from .qq import QQ
+from .qq import QQ, at, fill
 from .sync import Sync
 
 log = logging.getLogger("astrbot.plugin.astrbot_plugin_mousehole")
@@ -34,15 +34,18 @@ def next_round(now: float) -> float:
     return min(due for due in dues if due > at).timestamp()
 
 
-def reminder(item: dict[str, Any]) -> list[dict]:
+def reminder(item: dict[str, Any], template: str, site: str) -> list[dict]:
     """Quoting the question; NapCat leaves the quote out when it no longer has the message."""
-    text = (
-        f" 你问的「{item['thread']['title']}」在鼠洞上有 {item['count']} 条新回答：\n{item['url']}"
-    )
     return [
         {"type": "reply", "data": {"id": str(item["source"]["message_id"])}},
-        {"type": "at", "data": {"qq": str(item["asker"]["qq"])}},
-        {"type": "text", "data": {"text": text}},
+        *fill(
+            template,
+            at=[at(item["asker"]["qq"])],
+            title=item["thread"]["title"],
+            count=item["count"],
+            url=item["url"],
+            forum=site,
+        ),
     ]
 
 
@@ -54,6 +57,8 @@ class Answers:
         sync: Sync,
         state: Path,
         *,
+        template: str,
+        site: str,
         clock: Callable[[], float] = time.time,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ):
@@ -61,6 +66,8 @@ class Answers:
         self.qq = qq
         self.sync = sync
         self.state = state
+        self.template = template
+        self.site = site
         self.clock = clock
         self.sleep = sleep
 
@@ -104,4 +111,6 @@ class Answers:
         for i, item in enumerate(picked):
             at = now + SPREAD * (i + random.random()) / len(picked)
             await self.sleep(at - self.clock())
-            await self.qq.send_group(item["source"]["chat_id"], reminder(item))
+            await self.qq.send_group(
+                item["source"]["chat_id"], reminder(item, self.template, self.site)
+            )

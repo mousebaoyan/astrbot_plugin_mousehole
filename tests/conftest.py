@@ -10,6 +10,12 @@ from tools.fake_forum import FakeForum
 
 GROUP = 100200300
 BOT = 20000
+SCHEMA = json.loads((Path(__file__).parents[1] / "_conf_schema.json").read_text(encoding="utf-8"))
+
+
+def defaults(section: str) -> dict:
+    """A settings section's defaults: the wording the plugin ships with."""
+    return {key: item["default"] for key, item in SCHEMA[section]["items"].items()}
 
 
 class Script:
@@ -62,6 +68,7 @@ class Setup:
             data=data,
             prefixes=["/"],
             site="https://forum.test",
+            templates=defaults("archive"),
             notify=notify,
             clock=lambda: self.now,
             **options,

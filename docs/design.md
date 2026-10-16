@@ -89,6 +89,8 @@ QQ 的风控会识别"像机器人"的账号，插件尽量让 bot 的操作和�
 | `welcome.enabled` | 开 | 有人进群时欢迎（第 9 节） |
 | `welcome.groups` | 空 | 在哪些群欢迎，空的是论坛上关联的所有群 |
 | `welcome.template` | 见第 9 节 | 欢迎的话，多行文本：`{at}` 换成 @ 新进群的人，`{forum}` 换成论坛地址 |
+| `cards.question`、`answers.template`、`badges.template`、`lottery.template` 等 | 见第 9 节 | bot 发的话，见第 9 节的话术模板 |
+| `login_replies.*` | 见第 7 节 | 登录相关的回复，见第 9 节的话术模板 |
 | `cards.enabled` | 开 | 群友发了帖子的链接时，补一张写着标题和回复数的卡片（第 9 节） |
 | `archive.enabled` | 关 | 自动收录（第 8 节）。回放调好、论坛上建好收录用的版块再打开 |
 | `archive.groups` | 空 | 收录哪些群，空的是论坛上关联的所有群 |
@@ -580,6 +582,31 @@ https://bbs.mousebaoyan.cn/badges/14
   ```
 
 - `cards.enabled` 关掉就不发。
+
+**话术模板**：bot 发的话，除了周榜的文字版，都能在配置里改，默认值就是上面各节的例子。
+- 模板里的 `{名字}` 换成对应的内容，`{forum}` 在哪个模板里都是论坛地址；不认识的 `{名字}` 原样留着，写错了一眼就看得出来。多行文本，换行照写。
+- 引用原消息（链接卡片、新回答提醒、猜你想问）不在模板里，照旧加上。
+- `{at}` 换成 @ 那个人；一条消息最多 @ 20 个人的规矩照旧，超出的写名字。
+- 带列表的消息分整条和每一项两个模板，`{items}` 换成一项一行。
+- 改模板时照第 2 节：不要给不该带链接的消息加上链接。
+
+| 配置 | 默认 | 占位符 |
+| --- | --- | --- |
+| `cards.question` | `「{board}」{title}\n{author} · {replies} · {status} · {views} 次浏览` | 问答帖的卡片。`{board}` 版块，`{title}` 标题，`{author}` 楼主（匿名的是匿名的名字），`{replies}` 是"5 条回复"或"还没有回复"，`{status}` 是"✅ 已解决"或"待解答"，`{views}` 浏览数 |
+| `cards.other` | `「{board}」{title}\n{author} · {replies} · {views} 次浏览` | 其他类型的帖子，占位符同上，没有 `{status}` |
+| `answers.template` | `{at} 你问的「{title}」在鼠洞上有 {count} 条新回答：\n{url}` | `{at}` 楼主，`{title}` 标题，`{count}` 新回答几条，`{url}` 第一条新回答 |
+| `badges.template` | `【鼠洞金徽章】恭喜 {at} 得到「{badge}」：{description}\n{url}` | `{at}` 得到徽章的人，`{badge}` 徽章名，`{description}` 徽章说明，`{url}` 徽章页 |
+| `lottery.template` | `【抽奖开奖】{title}\n{items}\n共 {entries} 人参与\n{url}` | `{title}` 抽奖帖标题，`{items}` 各个奖项，`{entries}` 参与人数，`{url}` 抽奖帖 |
+| `lottery.item` | `{prize} {winners}` | 一个奖项：`{prize}` 奖项名，`{winners}` 中奖的人，空格隔开，没人中的是"无人中奖" |
+| `archive.summary` | `鼠洞收录了群里的 {count} 个帖子：\n{items}` | 收录汇总：`{count}` 新帖子数，`{items}` 列出的帖子 |
+| `archive.summary_item` | `{at} {kind}{title}\n{url}` | 一个帖子：`{at}` 发帖人，`{kind}` 讨论帖是"（讨论）"、问答帖是空的，`{title}` 标题，`{url}` 帖子 |
+| `archive.summary_more` | `还有 {count} 个，到鼠洞上看：{forum}` | 超过 10 个时接在列表最后一行，`{count}` 没列出的个数 |
+| `archive.suggest_template` | `猜你想问：\n{items}` | `{items}` 推的帖子 |
+| `archive.suggest_item` | `{n}. {title}\n{url}` | 一个帖子：`{n}` 序号，`{title}` 标题，`{url}` 帖子 |
+| `login_replies.link` | `鼠洞的登录链接，10 分钟内有效，只能用一次：\n{url}` | `{url}` 登录链接 |
+| `login_replies.confirmed` | 见第 7 节 | 口令登录成功，`{device}` 登录的设备 |
+| `login_replies.unknown_member`、`member_frozen`、`login_code_invalid`、`unreachable` | 见第 7 节 | 第 7 节表里的三种错误和论坛连不上，没有占位符 |
+| `login_replies.private` | `登录请私聊我` | 群里 @bot 说"登录"时的回复 |
 
 **论坛的提醒**：论坛直接发邮件到 `QQ号@qq.com`，有提醒就立刻发，插件不参与。bot 不加好友，主动发临时会话又是典型的机器人特征，所以不用 bot 私聊。
 

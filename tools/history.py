@@ -205,6 +205,8 @@ async def archive_exports(
             data=data / f"worker-{n}",
             prefixes=["/"],
             site="",
+            # No summary is sent (design §8.10).
+            templates={},
             notify=nothing,
             tuning=tuning,
             clock=lambda: now,

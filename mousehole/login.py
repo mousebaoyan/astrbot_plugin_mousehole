@@ -5,15 +5,13 @@ import re
 import httpx
 
 from .forum import Forum, ForumError
+from .qq import fill, text
 
 CODE = re.compile(r"\d{6}")
 
-# The forum's own messages are for people already; these few get said more plainly.
-REPLIES = {
-    "unknown_member": "论坛还没同步到你，进群后稍等几分钟再试",
-    "member_frozen": "你已经不在鼠群里了",
-    "login_code_invalid": "口令不对或者过期了，刷新网页拿个新的",
-}
+# The forum's own messages are for people already; these few get said more plainly, in the
+# words of the login_replies settings.
+PLAIN = ("unknown_member", "member_frozen", "login_code_invalid")
 
 
 def wants_login(text: str) -> bool:
@@ -21,20 +19,18 @@ def wants_login(text: str) -> bool:
     return text.startswith("登录") or CODE.fullmatch(text) is not None
 
 
-async def login(forum: Forum, qq: int, text: str) -> str:
-    code = text.strip().removeprefix("登录").strip()
+async def login(forum: Forum, qq: int, said: str, replies: dict[str, str], site: str) -> list[dict]:
+    """`replies`: the login_replies settings."""
+    code = said.strip().removeprefix("登录").strip()
     try:
         if CODE.fullmatch(code):
             result = await forum.call(
                 "POST", "/bot/auth/code/confirm", body={"code": code}, act_as=qq, operator=qq
             )
-            return (
-                f"已在 {result['device']} 登录鼠洞。"
-                "不是你本人在登录的话，到鼠洞设置页的登录设备里让它下线。"
-            )
+            return fill(replies["confirmed"], device=result["device"], forum=site)
         link = await forum.call("POST", "/bot/auth/links", act_as=qq, operator=qq)
-        return f"鼠洞的登录链接，10 分钟内有效，只能用一次：\n{link['url']}"
+        return fill(replies["link"], url=link["url"], forum=site)
     except ForumError as e:
-        return REPLIES.get(e.code, e.message)
+        return fill(replies[e.code], forum=site) if e.code in PLAIN else [text(e.message)]
     except httpx.HTTPError:
-        return "鼠洞暂时连不上，稍后再试"
+        return fill(replies["unreachable"], forum=site)

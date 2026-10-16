@@ -1,4 +1,5 @@
 import httpx
+from conftest import defaults
 
 from mousehole import cards
 from mousehole.cards import Cards
@@ -59,6 +60,7 @@ async def test_links_get_cards_the_sender_can_read_once_in_a_while(monkeypatch):
         Forum("http://forum.test", "t", httpx.MockTransport(handle)),
         FakeQQ(),
         site="https://bbs.test/",
+        templates=defaults("cards"),
         clock=lambda: clock["t"],
     )
     await c.saw(

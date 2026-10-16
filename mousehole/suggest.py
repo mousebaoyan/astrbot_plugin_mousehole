@@ -14,6 +14,7 @@ from datetime import datetime
 from . import judge
 from .archive import ROUND, Complete, Message, Notify, plain
 from .forum import Forum, ForumError
+from .qq import fill, joined
 from .similar import Index
 
 log = logging.getLogger("astrbot.plugin.astrbot_plugin_mousehole")
@@ -54,6 +55,7 @@ class Suggest:
         notify: Notify,
         *,
         site: str,
+        templates: dict[str, str],
         prefixes: list[str],
         clock: Callable[[], float] = time.time,
     ):
@@ -62,6 +64,7 @@ class Suggest:
         self.index = index
         self.notify = notify
         self.site = site.rstrip("/")
+        self.templates = templates
         self.prefixes = tuple(p for p in prefixes if p)
         self.clock = clock
         # Questions asked since the last round, by group.
@@ -111,7 +114,7 @@ class Suggest:
             ]
             if not threads or replies[group] == REPLIES_A_ROUND:
                 continue
-            await self.notify(group, suggestion(m, threads, self.site))
+            await self.notify(group, suggestion(m, threads, self.site, self.templates))
             replies[group] += 1
             for t in threads:
                 self.told[group, t["id"]] = now
@@ -149,11 +152,20 @@ def text_of(m: Message) -> str:
     return " ".join(plain(m.segments).split())
 
 
-def suggestion(m: Message, threads: list[dict], site: str) -> list[dict]:
-    """The reply to the question: the threads, numbered, with their links."""
-    lines = ["猜你想问："]
-    lines += [f"{i}. {t['title']}\n{site}/t/{t['id']}" for i, t in enumerate(threads, 1)]
+def suggestion(m: Message, threads: list[dict], site: str, templates: dict[str, str]) -> list[dict]:
+    """The reply to the question: the threads, numbered, with their links. `templates`: the
+    archive settings, with the reply's and each thread's."""
+    items = [
+        fill(
+            templates["suggest_item"],
+            n=i,
+            title=t["title"],
+            url=f"{site}/t/{t['id']}",
+            forum=site,
+        )
+        for i, t in enumerate(threads, 1)
+    ]
     return [
         {"type": "reply", "data": {"id": str(m.id)}},
-        {"type": "text", "data": {"text": "\n".join(lines)}},
+        *fill(templates["suggest_template"], items=joined(items, "\n"), forum=site),
     ]

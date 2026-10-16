@@ -30,6 +30,54 @@
     "default": true,
     "hint": "群友私聊 bot 发“登录”或网页上的 6 位口令登录论坛。关掉后 bot 不理这些私聊。"
   },
+  "login_replies": {
+    "description": "登录的回复",
+    "type": "object",
+    "items": {
+      "link": {
+        "description": "发登录链接",
+        "type": "text",
+        "default": "鼠洞的登录链接，10 分钟内有效，只能用一次：\n{url}",
+        "hint": "{url} 一次性登录链接，10 分钟内有效。{forum} 是论坛地址，如 https://bbs.mousebaoyan.cn。"
+      },
+      "confirmed": {
+        "description": "口令登录成功",
+        "type": "text",
+        "default": "已在 {device} 登录鼠洞。不是你本人在登录的话，到鼠洞设置页的登录设备里让它下线。",
+        "hint": "{device} 登录的设备，如“Chrome · macOS”。{forum} 是论坛地址，如 https://bbs.mousebaoyan.cn。"
+      },
+      "unknown_member": {
+        "description": "论坛还没有这个群友",
+        "type": "text",
+        "default": "论坛还没同步到你，进群后稍等几分钟再试",
+        "hint": "{forum} 是论坛地址，如 https://bbs.mousebaoyan.cn。"
+      },
+      "member_frozen": {
+        "description": "群友已经退群",
+        "type": "text",
+        "default": "你已经不在鼠群里了",
+        "hint": "{forum} 是论坛地址，如 https://bbs.mousebaoyan.cn。"
+      },
+      "login_code_invalid": {
+        "description": "口令不对或过期",
+        "type": "text",
+        "default": "口令不对或者过期了，刷新网页拿个新的",
+        "hint": "{forum} 是论坛地址，如 https://bbs.mousebaoyan.cn。"
+      },
+      "unreachable": {
+        "description": "论坛连不上",
+        "type": "text",
+        "default": "鼠洞暂时连不上，稍后再试",
+        "hint": "{forum} 是论坛地址，如 https://bbs.mousebaoyan.cn。"
+      },
+      "private": {
+        "description": "群里 @bot 说“登录”时",
+        "type": "text",
+        "default": "登录请私聊我",
+        "hint": "{forum} 是论坛地址，如 https://bbs.mousebaoyan.cn。"
+      }
+    }
+  },
   "push_bio": {
     "description": "推送 QQ 个性签名",
     "type": "bool",
@@ -50,6 +98,18 @@
         "type": "list",
         "default": [],
         "hint": "填群号；空的发到主群。"
+      },
+      "template": {
+        "description": "开奖的话",
+        "type": "text",
+        "default": "【抽奖开奖】{title}\n{items}\n共 {entries} 人参与\n{url}",
+        "hint": "{title} 抽奖帖标题，如“鼠群周年抽奖”；{items} 换成各个奖项，一个一行，每行的样子见下一项；{entries} 参与人数，如“25”；{url} 抽奖帖，如 https://bbs.mousebaoyan.cn/t/42。{forum} 是论坛地址，如 https://bbs.mousebaoyan.cn。"
+      },
+      "item": {
+        "description": "每个奖项",
+        "type": "text",
+        "default": "{prize} {winners}",
+        "hint": "{prize} 奖项名，如“一等奖：机械键盘”；{winners} 中奖的人，空格隔开，如“@鼠鼠 @阿柒”，一条消息最多 @ 20 人，再多的只写名字，没人中的是“无人中奖”。{forum} 是论坛地址，如 https://bbs.mousebaoyan.cn。"
       }
     }
   },
@@ -62,6 +122,12 @@
         "type": "bool",
         "default": true,
         "hint": "要开着成员同步，插件才知道谁在哪个群。"
+      },
+      "template": {
+        "description": "祝贺的话",
+        "type": "text",
+        "default": "【鼠洞金徽章】恭喜 {at} 得到「{badge}」：{description}\n{url}",
+        "hint": "{at} 换成 @ 得到徽章的人；{badge} 徽章名，如“无所不知”；{description} 徽章说明，如“回复被采纳 30 次”；{url} 徽章页，如 https://bbs.mousebaoyan.cn/badges/14。{forum} 是论坛地址，如 https://bbs.mousebaoyan.cn。"
       }
     }
   },
@@ -74,6 +140,12 @@
         "type": "bool",
         "default": true,
         "hint": "每天 10、16、22 点各查一轮。要开着成员同步，插件才知道楼主还在不在群里。"
+      },
+      "template": {
+        "description": "提醒的话",
+        "type": "text",
+        "default": "{at} 你问的「{title}」在鼠洞上有 {count} 条新回答：\n{url}",
+        "hint": "前面自动引用楼主的提问。{at} 换成 @ 楼主；{title} 帖子标题，如“预推免第一批和第二批能都报吗”；{count} 新回答几条，如“2”；{url} 第一条新回答，如 https://bbs.mousebaoyan.cn/t/42?floor=5。{forum} 是论坛地址，如 https://bbs.mousebaoyan.cn。"
       }
     }
   },
@@ -110,6 +182,18 @@
         "type": "bool",
         "default": true,
         "hint": "以发链接的人的身份读帖子，他看不到的不发。"
+      },
+      "question": {
+        "description": "问答帖的卡片",
+        "type": "text",
+        "default": "「{board}」{title}\n{author} · {replies} · {status} · {views} 次浏览",
+        "hint": "{board} 版块，如“保研问答”；{title} 标题，如“预推免第一批和第二批能都报吗”；{author} 楼主，匿名的是匿名的名字，如“鼠鼠”；{replies} 如“5 条回复”，没有回复时是“还没有回复”；{views} 浏览数，如“120”。{status} 是“✅ 已解决”或“待解答”。{forum} 是论坛地址，如 https://bbs.mousebaoyan.cn。卡片不要带帖子链接，原消息里已经有了。"
+      },
+      "other": {
+        "description": "其他帖子的卡片",
+        "type": "text",
+        "default": "「{board}」{title}\n{author} · {replies} · {views} 次浏览",
+        "hint": "讨论帖、投票帖、抽奖帖等。{board} 版块，如“保研问答”；{title} 标题，如“预推免第一批和第二批能都报吗”；{author} 楼主，匿名的是匿名的名字，如“鼠鼠”；{replies} 如“5 条回复”，没有回复时是“还没有回复”；{views} 浏览数，如“120”。{forum} 是论坛地址，如 https://bbs.mousebaoyan.cn。"
       }
     }
   },
@@ -153,11 +237,41 @@
         "default": true,
         "hint": "每天早上 8 点，每个群发一条：前一天收录的新帖子，@ 发帖人并附上链接，最多列 10 个。关掉后照常收录，汇总不发。"
       },
+      "summary": {
+        "description": "收录汇总的话",
+        "type": "text",
+        "default": "鼠洞收录了群里的 {count} 个帖子：\n{items}",
+        "hint": "{count} 新帖子数，如“2”；{items} 换成列出的帖子，一个一项，每项的样子见下一项，最多列 10 个。{forum} 是论坛地址，如 https://bbs.mousebaoyan.cn。"
+      },
+      "summary_item": {
+        "description": "收录汇总里的每个帖子",
+        "type": "text",
+        "default": "{at} {kind}{title}\n{url}",
+        "hint": "{at} 换成 @ 提问或发起讨论的人；{kind} 讨论帖是“（讨论）”，问答帖是空的；{title} 帖子标题，如“预推免第一批和第二批能都报吗”；{url} 帖子链接，如 https://bbs.mousebaoyan.cn/t/42。{forum} 是论坛地址，如 https://bbs.mousebaoyan.cn。"
+      },
+      "summary_more": {
+        "description": "收录汇总超过 10 个时的最后一行",
+        "type": "text",
+        "default": "还有 {count} 个，到鼠洞上看：{forum}",
+        "hint": "接在列出的帖子后面。{count} 没列出的个数，如“3”。{forum} 是论坛地址，如 https://bbs.mousebaoyan.cn。"
+      },
       "suggest": {
         "description": "猜你想问：群里的提问论坛上已经有人回答过的，引用那条消息回复帖子链接",
         "type": "bool",
         "default": true,
         "hint": "每 10 分钟看一次新的提问，用向量和论坛搜索找候选帖子，有候选时才调一次大模型确认；每个群每次最多回 2 条，同一个帖子 6 小时内不在同一个群重复推。只在收录的群里推。"
+      },
+      "suggest_template": {
+        "description": "猜你想问的话",
+        "type": "text",
+        "default": "猜你想问：\n{items}",
+        "hint": "前面自动引用那条提问。{items} 换成推的帖子，一个一项，每项的样子见下一项，最多 3 个。{forum} 是论坛地址，如 https://bbs.mousebaoyan.cn。"
+      },
+      "suggest_item": {
+        "description": "猜你想问里的每个帖子",
+        "type": "text",
+        "default": "{n}. {title}\n{url}",
+        "hint": "{n} 序号，如“1”；{title} 帖子标题，如“拿了优营不去会怎样”；{url} 帖子链接，如 https://bbs.mousebaoyan.cn/t/17。{forum} 是论坛地址，如 https://bbs.mousebaoyan.cn。"
       },
       "segment_messages": {
         "description": "一段最多几条消息",

@@ -1,6 +1,7 @@
 from datetime import datetime
 
 import httpx
+from conftest import defaults
 
 from mousehole import answers
 from mousehole.answers import PER_ROUND, SPREAD, Answers, next_round
@@ -58,7 +59,16 @@ async def test_a_round_tells_askers_still_in_the_group_spread_over_two_hours(tmp
     sync = type(
         "Sync", (), {"groups": [GROUP], "roster": {GROUP: {ASKER, *others}, GROUP + 1: {ASKER}}}
     )()
-    a = Answers(forum, qq, sync, tmp_path / "answers.json", clock=lambda: clock["t"], sleep=sleep)
+    a = Answers(
+        forum,
+        qq,
+        sync,
+        tmp_path / "answers.json",
+        template=defaults("answers")["template"],
+        site="https://bbs.test",
+        clock=lambda: clock["t"],
+        sleep=sleep,
+    )
 
     # The first round only marks where the next begins.
     await a.round()

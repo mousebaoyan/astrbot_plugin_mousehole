@@ -3,12 +3,19 @@ import time
 
 import httpx
 import pytest
+from conftest import defaults
 
 from mousehole import events
 from mousehole.events import MENTIONS, Events, badge_message, lottery_message
 from mousehole.forum import Forum
 
 GROUP = 100200300
+SITE = "https://bbs.test"
+WORDING = {
+    "site": SITE,
+    "lottery_templates": defaults("lottery"),
+    "badge_template": defaults("badges")["template"],
+}
 
 
 def drawn(winners_per_prize):
@@ -27,7 +34,7 @@ def drawn(winners_per_prize):
 
 
 def test_lottery_results_mention_winners_up_to_a_limit_and_name_the_rest():
-    segments = lottery_message(drawn([MENTIONS + 2, 0]))
+    segments = lottery_message(drawn([MENTIONS + 2, 0]), defaults("lottery"), SITE)
     assert sum(s["type"] == "at" for s in segments) == MENTIONS
     text = "".join(s["data"].get("text", "") for s in segments)
     assert text.startswith("【抽奖开奖】周年抽奖\n奖0")
@@ -87,7 +94,9 @@ async def test_events_are_caught_up_then_streamed_and_the_cursor_kept(tmp_path, 
     sync = type("Sync", (), {"groups": [GROUP]})()
     forum = Forum("http://forum.test", "t", httpx.MockTransport(handle))
     with pytest.raises(Stop):
-        await Events(forum, qq, sync, state, lottery=[], badges=True, bio=True, index=None).run()
+        await Events(
+            forum, qq, sync, state, lottery=[], badges=True, bio=True, index=None, **WORDING
+        ).run()
     # The stale draw isn't announced; the fresh and the streamed ones are.
     assert qq.sent == [GROUP, GROUP]
     assert bios == [{"bio": "123 的签名"}]
@@ -110,7 +119,7 @@ async def test_an_expired_cursor_goes_on_from_the_latest_event(tmp_path, monkeyp
     forum = Forum("http://forum.test", "t", httpx.MockTransport(handle))
     with pytest.raises(Stop):
         await Events(
-            forum, FakeQQ(), None, state, lottery=[], badges=True, bio=True, index=None
+            forum, FakeQQ(), None, state, lottery=[], badges=True, bio=True, index=None, **WORDING
         ).run()
     assert json.loads(state.read_text()) == {"cursor": 77}
 
@@ -119,7 +128,7 @@ async def test_gold_badges_are_congratulated_in_the_groups_the_member_is_in():
     other = GROUP + 1
     qq = FakeQQ()
     sync = type("Sync", (), {"groups": [GROUP, other], "roster": {GROUP: {123}, other: {456}}})()
-    e = Events(None, qq, sync, None, lottery=None, badges=True, bio=False, index=None)
+    e = Events(None, qq, sync, None, lottery=None, badges=True, bio=False, index=None, **WORDING)
 
     def granted(tier: str) -> dict:
         badge = {"id": 3, "name": "无所不知", "description": "回复被采纳 30 次", "tier": tier}
@@ -129,4 +138,8 @@ async def test_gold_badges_are_congratulated_in_the_groups_the_member_is_in():
     await e.act("badge.granted", granted("silver"), time.time())
     await e.act("badge.granted", granted("gold"), time.time() - 13 * 3600)
     assert qq.sent == [GROUP]
-    assert badge_message(granted("gold"))[1] == {"type": "at", "data": {"qq": "123"}}
+    assert badge_message(granted("gold"), defaults("badges")["template"], SITE) == [
+        {"type": "text", "data": {"text": "【鼠洞金徽章】恭喜 "}},
+        {"type": "at", "data": {"qq": "123"}},
+        {"type": "text", "data": {"text": " 得到「无所不知」：回复被采纳 30 次\nu"}},
+    ]

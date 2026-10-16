@@ -14,7 +14,7 @@ from .mousehole.events import Events
 from .mousehole.forum import Forum, ForumError
 from .mousehole.llm import LLM, Embedder, Settings
 from .mousehole.login import login, wants_login
-from .mousehole.qq import QQ
+from .mousehole.qq import QQ, fill
 from .mousehole.similar import Index
 from .mousehole.suggest import Suggest
 from .mousehole.sync import Sync
@@ -72,6 +72,7 @@ class Mousehole(Star):
                 data=data,
                 prefixes=self.context.get_config()["wake_prefix"],
                 site=c["forum_url"],
+                templates=c["archive"],
                 notify=self.qq.send_group if c["archive"]["notify"] else None,
                 history=self.history,
                 tuning=Tuning.of(c),
@@ -83,6 +84,7 @@ class Mousehole(Star):
                     index,
                     self.qq.send_group,
                     site=c["forum_url"],
+                    templates=c["archive"],
                     prefixes=self.context.get_config()["wake_prefix"],
                 )
         lottery = c["lottery"]
@@ -95,6 +97,9 @@ class Mousehole(Star):
             badges=c["badges"]["enabled"],
             bio=c["push_bio"],
             index=index,
+            site=c["forum_url"],
+            lottery_templates=lottery,
+            badge_template=c["badges"]["template"],
         )
         self.weekly = (
             Weekly(
@@ -109,7 +114,14 @@ class Mousehole(Star):
             else None
         )
         self.answers = (
-            Answers(self.forum, self.qq, self.sync, data / "answers.json")
+            Answers(
+                self.forum,
+                self.qq,
+                self.sync,
+                data / "answers.json",
+                template=c["answers"]["template"],
+                site=c["forum_url"],
+            )
             if c["answers"]["enabled"]
             else None
         )
@@ -126,7 +138,9 @@ class Mousehole(Star):
             else None
         )
         self.cards = (
-            Cards(self.forum, self.qq, site=c["forum_url"]) if c["cards"]["enabled"] else None
+            Cards(self.forum, self.qq, site=c["forum_url"], templates=c["cards"])
+            if c["cards"]["enabled"]
+            else None
         )
         self.tasks = [asyncio.create_task(self.start())]
         # When AstrBot starts, plugins load before the platforms; installed or reloaded later,
@@ -181,7 +195,9 @@ class Mousehole(Star):
         if not wants_login(text):
             return
         try:
-            await self.qq.reply(raw, await login(self.forum, raw["user_id"], text))
+            replies = self.config["login_replies"]
+            site = self.config["forum_url"]
+            await self.qq.reply(raw, await login(self.forum, raw["user_id"], text, replies, site))
         except Exception:
             logger.exception("Replying to a private login failed")
 
@@ -216,7 +232,8 @@ class Mousehole(Star):
             )
             if self.config["login"] and at_bot and plain(raw["message"]).strip().startswith("登录"):
                 event.stop_event()
-                await self.qq.reply(raw, "登录请私聊我")
+                private = self.config["login_replies"]["private"]
+                await self.qq.reply(raw, fill(private, forum=self.config["forum_url"]))
             # Last: copying its pictures to the forum takes a moment.
             if self.archives(group):
                 if self.suggest:
