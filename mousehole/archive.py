@@ -760,6 +760,7 @@ class Archive:
                         "tags": await self.make_tags(item, report),
                         "content": content(item.messages, item.body),
                         "source": self.source(chat, item.messages),
+                        "created_at": int(item.messages[0].time),
                     },
                     act_as=author,
                     key=key,
@@ -854,6 +855,7 @@ class Archive:
         payload = {
             "content": content(messages, body),
             "source": self.source(chat, messages),
+            "created_at": int(messages[0].time),
         }
         if reply_to is not None:
             payload["reply_to_id"] = reply_to.post
