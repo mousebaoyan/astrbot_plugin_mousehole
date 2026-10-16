@@ -337,14 +337,14 @@ class Archive:
             return False
         return any(shows(s) for s in m.segments)
 
-    async def add(self, group: int, m: Message, bot: int) -> None:
+    async def add(self, group: int, m: Message, bot: int) -> bool:
         """Kept on disk for a round to take in, its pictures copied to the forum now: QQ's links
-        expire within hours (design §8.1)."""
+        expire within hours (design §8.1). False for one not worth keeping."""
         if str(group) not in self.state["since"]:
             self.state["since"][str(group)] = self.clock()
             self.save_state()
         if not self.worth(m, bot):
-            return
+            return False
         for s in m.segments:
             if s["type"] != "image" or is_sticker(s) or not s["data"].get("url"):
                 continue
@@ -358,6 +358,7 @@ class Archive:
                 continue
             m.uploads.append(stored["url"])
         self.wait(group, m.record())
+        return True
 
     def recall(self, group: int, message_id: int) -> None:
         """Someone took back their own message: left out unless archived already (design
@@ -439,25 +440,35 @@ class Archive:
             missed: dict[int, dict] = {}
             before = None
             read = 0
+            oldest = self.clock()
             try:
                 while True:
                     page = sorted(await self.history(group, before), key=lambda r: r["time"])
+                    if not page:
+                        break
                     read += len(page)
+                    oldest = page[0]["time"]
                     for r in page:
                         said = (r["user_id"], int(r["time"]))
                         if r["time"] > since and not {r["message_id"], said} & heard:
                             missed[r["message_id"]] = r
-                    if not page or page[0]["time"] <= since or page[0]["message_id"] == before:
+                    if page[0]["time"] <= since or page[0]["message_id"] == before:
                         break
                     before = page[0]["message_id"]
                     await asyncio.sleep(HISTORY_GAP)
             except Exception:
                 # The round goes on with what was heard and what was read back so far.
                 log.exception("Reading the history of group %s failed", group)
-            for r in sorted(missed.values(), key=lambda r: r["time"]):
+            added = [
                 await self.add(group, Message.from_onebot(r), r["self_id"])
+                for r in sorted(missed.values(), key=lambda r: r["time"])
+            ]
             log.info(
-                "Read back %d messages of group %s, %d of them missed", read, group, len(missed)
+                "Read back %d messages of group %s to %s, %d of them missed",
+                read,
+                group,
+                datetime.fromtimestamp(oldest).strftime("%m-%d %H:%M"),
+                sum(added),
             )
 
     async def wait_until(self, hours: tuple[int, ...]) -> None:
