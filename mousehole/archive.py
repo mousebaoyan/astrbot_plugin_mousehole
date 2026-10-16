@@ -405,7 +405,8 @@ class Archive:
         if self.history is None:
             return
         since = self.state["batch"]
-        for group in self.state["groups"]:
+        waiting = {int(path.stem) for path in self.pending.glob("*.jsonl")}
+        for group in sorted(waiting | set(self.state["groups"])):
             path = self.pending / f"{group}.jsonl"
             kept = load(path) if path.exists() else []
             # By ID, and by who and when as well, should the history's IDs not be the events'.
