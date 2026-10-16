@@ -13,10 +13,10 @@ MORNING = datetime(2026, 10, 10, 10).timestamp()
 EVENING = datetime(2026, 10, 10, 20).timestamp()
 
 
-def exported(id, uin, at, elements):
+def exported(seq, uin, at, elements):
     return {
-        "id": str(id),
-        "seq": str(id),
+        "id": str(7690000000000000000 + seq),
+        "seq": str(seq),
         "timestamp": int(at * 1000),
         "sender": {"uin": str(uin), "name": f"鼠{uin}"},
         "content": {"elements": elements, "text": "原文"},
@@ -36,9 +36,9 @@ def export(tmp_path):
     path = tmp_path / "export" / "group.json"
     picture = {"type": "image", "data": {"subType": "photo", "md5": "ABC"}}
     messages = [
-        exported(7690000000000000001, ASKER, MORNING, [text("夏令营要准备什么"), picture]),
-        exported(7690000000000000002, ANSWERER, MORNING + 60, [text("成绩单和推荐信")]),
-        exported(7690000000000000003, ANSWERER, EVENING, [text("晚上好")]),
+        exported(2435001, ASKER, MORNING, [text("夏令营要准备什么"), picture]),
+        exported(2435002, ANSWERER, MORNING + 60, [text("成绩单和推荐信")]),
+        exported(2435003, ANSWERER, EVENING, [text("晚上好")]),
     ]
     info = {"peerUid": str(GROUP), "selfUin": "20000"}
     path.write_text(json.dumps({"chatInfo": info, "messages": messages}), encoding="utf-8")

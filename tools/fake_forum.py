@@ -13,6 +13,9 @@ import httpx
 
 from mousehole.forum import Forum
 
+# The largest integer the forum's JSON keeps exact.
+MAX_ID = 2**53 - 1
+
 
 @dataclass
 class Post:
@@ -203,6 +206,8 @@ class FakeForum:
             case "GET", ["users", user]:
                 return ok({"id": int(user.removeprefix("qq:"))})
             case "GET", ["bot", "messages", "group", group, message]:
+                if int(message) > MAX_ID:
+                    return error(400, "invalid_request")
                 post_id = self.links.get((int(group), int(message)))
                 if post_id is None:
                     return error(404, "message_not_linked")
@@ -244,7 +249,10 @@ class FakeForum:
         return "".join(parts)
 
     def taken(self, source: dict, post: int | None) -> httpx.Response | None:
-        """409 when a message belongs to another floor already."""
+        """409 when a message belongs to another floor already; 400, as the forum's JSON
+        answers, for IDs past the integers it keeps exact."""
+        if any(m > MAX_ID for m in source["message_ids"]):
+            return error(400, "invalid_request")
         for message in source["message_ids"]:
             owner = self.links.get((source["chat_id"], message))
             if owner is not None and owner != post:

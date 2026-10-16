@@ -1,4 +1,4 @@
-from tools.replay import convert
+from tools.replay import HISTORY_IDS, convert
 
 
 def exported(id, seq, uin, elements, **flags):
@@ -36,7 +36,7 @@ def test_exported_messages_become_onebot_segments_by_their_ids():
         ],
     }
     group, bot, messages = convert(export)
-    ids = [7690000000000000001, 7690000000000000004]
+    ids = [HISTORY_IDS + 11, HISTORY_IDS + 14]
     assert (group, bot, [m.id for m, _, _ in messages]) == (100200300, 20000, ids)
     m, name, text = messages[1]
     assert (m.user, m.time, m.quoted, name, text) == (2, 1_791_500_014, ids[0], "鼠2", "原文")

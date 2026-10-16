@@ -49,6 +49,9 @@ CATEGORIZE_SCHEMA = {
         "additionalProperties": False,
     },
 }
+# Exported messages go by their sequence numbers in the group from here on: past the IDs NapCat
+# gives the plugin, under 2^31, and within the integers the forum's JSON keeps exact, under 2^53.
+HISTORY_IDS = 2**40
 # Titles sharing this much are listed as maybe the same question.
 SIMILAR_TITLES = 0.3
 
@@ -58,10 +61,9 @@ SIMILAR_TITLES = 0.3
 
 def convert(export: dict) -> tuple[int, int, list[tuple[Message, str, str]]]:
     """The group, the exporting account (taken for the bot), and each message with its sender's
-    card and text as exported. Recalled messages lost their text, and system ones say nothing.
-    Messages go by QQ's message IDs, which the forum keeps apart from those the plugin sees."""
+    card and text as exported. Recalled messages lost their text, and system ones say nothing."""
     info = export["chatInfo"]
-    ids = {m["id"] for m in export["messages"]}
+    ids = {m["id"]: HISTORY_IDS + int(m["seq"]) for m in export["messages"]}
     messages = []
     for m in export["messages"]:
         if m["system"] or m["recalled"]:
@@ -74,9 +76,9 @@ def convert(export: dict) -> tuple[int, int, list[tuple[Message, str, str]]]:
             elif kind == "at":
                 segments.append({"type": "at", "data": {"qq": data.get("uin") or "all"}})
             elif kind == "reply":
-                quoted = data.get("referencedMessageId")
-                if quoted in ids:
-                    segments.append({"type": "reply", "data": {"id": quoted}})
+                quoted = ids.get(data.get("referencedMessageId"))
+                if quoted is not None:
+                    segments.append({"type": "reply", "data": {"id": str(quoted)}})
             elif kind == "image":
                 sticker = data.get("subType") == "sticker"
                 # The picture itself is where the export keeps it, by its MD5.
@@ -84,7 +86,7 @@ def convert(export: dict) -> tuple[int, int, list[tuple[Message, str, str]]]:
                 segments.append({"type": "image", "data": image})
             else:
                 segments.append({"type": {"market_face": "mface"}.get(kind, kind), "data": {}})
-        message = Message(int(m["id"]), int(m["sender"]["uin"]), m["timestamp"] / 1000, segments)
+        message = Message(ids[m["id"]], int(m["sender"]["uin"]), m["timestamp"] / 1000, segments)
         messages.append((message, m["sender"]["name"], m["content"]["text"]))
     return int(info["peerUid"]), int(info["selfUin"]), messages
 
