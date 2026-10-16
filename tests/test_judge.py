@@ -51,6 +51,12 @@ def test_titles_are_cut_and_unknown_tags_dropped():
     assert (len(question.title), question.tags) == (judge.TITLE_CHARS, ["夏令营"])
 
 
+def test_a_floors_messages_are_in_the_order_they_were_said():
+    numbers = numbered(message(1, 1, "a"), message(2, 1, "b"))
+    (question,) = check({"new": [QUESTION | {"messages": [2, 1]}]}, numbers).questions
+    assert [m.number for m in question.messages] == [1, 2]
+
+
 def test_a_message_goes_into_one_floor_only():
     numbers = numbered(message(1, 1, "a"))
     answer = {"ref": "N2", "type": "reply", "question": "N1", "messages": [1], "body": "x"}

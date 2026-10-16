@@ -481,7 +481,8 @@ def check(
             plan.dropped.append(f"{what}: messages not by {author}")
             return None
         taken.update(m.number for m in found)
-        return found
+        # In the order they were said: the floor is dated by its first, and reminders quote it.
+        return sorted(found, key=lambda m: m.number)
 
     def body_of(item: dict, what: str) -> str | None:
         body = item.get("body")
