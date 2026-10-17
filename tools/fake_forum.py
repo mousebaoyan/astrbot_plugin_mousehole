@@ -316,13 +316,16 @@ class FakeForum:
     def create_post(self, t: Thread, body: dict, user: int) -> httpx.Response:
         if conflict := self.taken(body["source"], None):
             return conflict
+        reply_to = body.get("reply_to_id")
+        if reply_to is not None and self.posts[reply_to].thread != t.id:
+            return error(400, "invalid_request")
         p = Post(
             self.next_id(),
             t.id,
             len(t.posts) + 1,
             user,
             self.render(body["content"]),
-            body.get("reply_to_id"),
+            reply_to,
             body.get("created_at", self.now()),
         )
         t.posts.append(p)

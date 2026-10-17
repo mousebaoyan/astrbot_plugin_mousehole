@@ -381,7 +381,7 @@ ECNU 的计价和限制（[配额限制](https://developer.ecnu.edu.cn/vitepress
 | 输出 | 调用 | `X-Act-As` |
 | --- | --- | --- |
 | 新的提问或讨论 | `POST /threads`：类型是问答（`question`）或讨论（`discussion`），标题、版块、标签用大模型给的 | 提问或发起讨论的人 |
-| 新的回复 | `POST /threads/{帖子 ID}/posts`，`reply_to_id` 是它回复的那一层 | 回复的人 |
+| 新的回复 | `POST /threads/{帖子 ID}/posts`，`reply_to_id` 是它回复的那一层；大模型填的是别的帖子里的一层时不带 | 回复的人 |
 | 更新 | `PATCH /posts/{楼层 ID}`；改标题时再 `PATCH /threads/{帖子 ID}` | 那一层的作者 |
 | 回应和短评 | `PUT /posts/{楼层 ID}/reaction`，有短评时再 `PUT /posts/{楼层 ID}/boost`，都带 `source`（那条消息）和 `created_at`，论坛不提醒楼层作者 | 表态的人 |
 

@@ -247,6 +247,15 @@ async def test_the_same_question_asked_again_goes_into_the_thread_as_a_floor(set
     assert answered.reply_to == asked_again.id
 
 
+async def test_a_reply_naming_a_floor_of_another_thread_is_posted_without_quoting_it(setup):
+    other = {**QUESTION, "messages": [4], "title": "夏令营优营有用吗"}
+    answer = {**ANSWER, "messages": [5], "reply_to": "A1"}
+    s = await asked(setup, {"new": [other, answer], "edit": []}, {"same": None})
+    await s.batch(message(4, OTHER, "夏令营优营有用吗"), message(5, ANSWERER, "有用"))
+    newer = list(s.forum.threads.values())[1]
+    assert [(p.author, p.reply_to) for p in newer.posts] == [(OTHER, None), (ANSWERER, None)]
+
+
 async def thread_asked_at(s, time: int) -> int:
     older = await s.forum.client().call(
         "POST",

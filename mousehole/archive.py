@@ -830,6 +830,9 @@ class Archive:
             reply_to = None
             if item.reply_to is not None:
                 reply_to = floors.get(item.reply_to) or answered.get(item.reply_to)
+            # The LLM may name a floor of another thread, where a floor can't reply.
+            if reply_to is not None and reply_to.thread != question.floor.thread:
+                reply_to = None
             floor = await attempt(
                 f"new {item.ref}", self.post_answer(chat, item, question, reply_to)
             )
