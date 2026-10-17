@@ -105,7 +105,11 @@ class LLM:
             "stream_options": {"include_usage": True},
         }
         if s.structured_output == "json_schema" and schema:
-            body["response_format"] = {"type": "json_schema", "json_schema": schema}
+            # Without strict, Step takes the schema as a hint and may answer in other words.
+            body["response_format"] = {
+                "type": "json_schema",
+                "json_schema": schema | {"strict": True},
+            }
         elif s.structured_output != "off":
             body["response_format"] = {"type": "json_object"}
         if s.thinking != "omit":

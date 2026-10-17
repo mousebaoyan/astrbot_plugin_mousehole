@@ -54,7 +54,10 @@ def answering(*troubles):
             {
                 "thinking": {"type": "enabled"},
                 "reasoning_effort": "low",
-                "response_format": {"type": "json_schema", "json_schema": DUPLICATE_SCHEMA},
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": DUPLICATE_SCHEMA | {"strict": True},
+                },
             },
             ["temperature"],
         ),
