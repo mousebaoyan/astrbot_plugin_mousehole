@@ -238,10 +238,8 @@ async def test_the_same_question_asked_again_goes_into_the_thread_as_a_floor(set
     assert answered.reply_to == asked_again.id
 
 
-async def test_a_question_some_older_thread_asks_goes_there(setup):
-    s = setup(Script({"new": [{**QUESTION, "messages": [1]}], "edit": []}, {"same": "C1"}))
-    forum = s.forum.client()
-    older = await forum.call(
+async def thread_asked_at(s, time: int) -> int:
+    older = await s.forum.client().call(
         "POST",
         "/threads",
         body={
@@ -251,14 +249,30 @@ async def test_a_question_some_older_thread_asks_goes_there(setup):
             "tags": [],
             "content": {"onebot": [{"type": "text", "data": {"text": "能都报吗"}}]},
             "source": {"chat_type": "group", "chat_id": 1, "message_ids": [1]},
+            "created_at": time,
         },
         act_as=OTHER,
     )
-    await s.batch(message(1, ASKER, "预推免第一批和第二批能都报吗"))
-    t = s.forum.threads[older["id"]]
+    return older["id"]
+
+
+async def test_a_question_some_older_thread_asks_goes_there(setup):
+    s = setup(Script({"new": [{**QUESTION, "messages": [1]}], "edit": []}, {"same": "C1"}))
+    asked = message(2, ASKER, "预推免第一批和第二批能都报吗")
+    older = await thread_asked_at(s, int(asked.time) - 3600)
+    await s.batch(asked)
+    t = s.forum.threads[older]
     assert (len(s.forum.threads), t.posts[-1].author) == (1, ASKER)
     system, prompt = s.llm.prompts[1]
     assert "C1. 预推免第一批第二批" in prompt
+
+
+async def test_a_thread_talked_in_after_the_question_was_asked_is_no_candidate(setup):
+    s = setup(Script({"new": [{**QUESTION, "messages": [1]}], "edit": []}))
+    asked = message(2, ASKER, "预推免第一批和第二批能都报吗")
+    await thread_asked_at(s, int(asked.time) + 3600)
+    await s.batch(asked)
+    assert (len(s.forum.threads), len(s.llm.prompts)) == (2, 1)
 
 
 async def test_someone_who_turned_archiving_off_is_left_out_with_answers_to_them(setup):

@@ -116,6 +116,7 @@ class FakeForum:
             "tags": t.tags,
             "reply_count": sum(not p.deleted for p in t.posts[1:]),
             "floor_count": len(t.posts),
+            "last_post_at": max(p.created_at for p in t.posts),
             "created_at": t.created_at,
             "locked": t.locked,
             "excerpt": re.sub(r"!\[\]\([^)]*\)", "", opening)[:100],

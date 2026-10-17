@@ -1065,11 +1065,16 @@ class Archive:
         found = []
         for thread in await self.index.candidates(item.title, item.body):
             try:
-                found.append(await self.forum.call("GET", f"/threads/{thread}"))
+                t = await self.forum.call("GET", f"/threads/{thread}")
             except ForumError as e:
                 if e.status != 404:
                     raise
                 self.index.remove(thread)
+                continue
+            # A floor asked before the thread's last would go above floors said after it, as
+            # when the history is archived after the plugin, or by workers side by side.
+            if t["last_post_at"] <= item.messages[0].time:
+                found.append(t)
         if not found:
             return None
         for t in found:
