@@ -66,6 +66,21 @@ def test_floors_and_boosts_end_without_a_full_stop():
     assert plan.reactions[0].boost == "学到了"
 
 
+def test_a_picture_left_out_goes_with_what_its_sender_said_around_it():
+    picture = [{"type": "image", "data": {"url": "x"}}]
+    numbers = numbered(
+        message(1, 1, "a"),
+        message(2, 2, segments=picture),
+        message(3, 2, "b"),
+        message(4, 1, segments=picture),
+    )
+    answer = {"ref": "N2", "type": "reply", "question": "N1", "messages": [3], "body": "b"}
+    plan = check({"new": [QUESTION, answer]}, numbers)
+    # Not 4, said after someone else spoke.
+    assert [m.number for m in plan.questions[0].messages] == [1]
+    assert [m.number for m in plan.answers[0].messages] == [2, 3]
+
+
 def test_a_message_goes_into_one_floor_only():
     numbers = numbered(message(1, 1, "a"))
     answer = {"ref": "N2", "type": "reply", "question": "N1", "messages": [1], "body": "x"}

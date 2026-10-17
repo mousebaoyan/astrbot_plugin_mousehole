@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from itertools import groupby
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -615,4 +616,19 @@ def check(
             continue
         taken.add(n)
         plan.reactions.append(Reaction(m, post, emoji, boost))
+
+    # A picture sent on its own, which the LLM may leave out, goes with what its sender said
+    # around it: into the floor of their next message there, else of their last.
+    floor_of = {m.number: item for item in plan.questions + plan.answers for m in item.messages}
+    floor_of |= {m.number: edit for edit in plan.edits for m in edit.messages}
+    for _, run in groupby(sorted(numbers.values(), key=lambda m: m.number), lambda m: m.user):
+        run = list(run)
+        for i, m in enumerate(run):
+            if m.floor is not None or m.reacted is not None or m.number in taken:
+                continue
+            near = next((x for x in run[i + 1 :] + run[:i][::-1] if x.number in floor_of), None)
+            if m.pictures_only and near is not None:
+                item = floor_of[m.number] = floor_of[near.number]
+                item.messages = sorted(item.messages + [m], key=lambda m: m.number)
+                taken.add(m.number)
     return plan

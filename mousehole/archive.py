@@ -178,6 +178,11 @@ class Message:
     def quoted(self) -> int | None:
         return next((int(s["data"]["id"]) for s in self.segments if s["type"] == "reply"), None)
 
+    @property
+    def pictures_only(self) -> bool:
+        shown = [s for s in self.segments if shows(s)]
+        return bool(shown) and all(s["type"] == "image" for s in shown)
+
     @classmethod
     def from_onebot(cls, event: dict) -> Message:
         return cls(event["message_id"], event["user_id"], event["time"], event["message"])
