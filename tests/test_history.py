@@ -35,7 +35,9 @@ def export(tmp_path):
     (images / "abc_ABC.png").write_bytes(b"png")
     path = tmp_path / "export" / "group.json"
     picture = {"type": "image", "data": {"subType": "photo", "md5": "ABC"}}
+    system = {"id": "1", "seq": "1", "timestamp": int(MORNING * 1000) - 1, "sender": {}}
     messages = [
+        system | {"content": {"elements": [], "text": ""}, "system": True, "recalled": False},
         exported(2435001, ASKER, MORNING, [text("夏令营要准备什么"), picture]),
         exported(2435002, ANSWERER, MORNING + 60, [text("成绩单和推荐信")]),
         exported(2435003, ANSWERER, EVENING, [text("晚上好")]),
@@ -98,7 +100,7 @@ async def test_who_left_before_the_forum_knew_them_is_archived_under_their_name(
     llm = Script({"new": [QUESTION, ANSWER], "edit": []}, NOTHING)
     await archive_exports(client, llm, index, [export(tmp_path)], tmp_path / "data", Tuning(), 1)
     assert forum.synced[GROUP] == [
-        {"user_id": ASKER, "nickname": "鼠", "in_group": False, "card": f"鼠{ASKER}"}
+        {"user_id": ASKER, "in_group": False, "nickname": "鼠", "card": f"鼠{ASKER}"}
     ]
     [thread] = forum.threads.values()
     # Their picture too, which the bot uploads for them.

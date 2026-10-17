@@ -129,8 +129,11 @@ async def enroll(forum: Forum, senders: dict[int, dict[int, dict]]) -> None:
             except ForumError as e:
                 if e.status != 404:
                     raise
-                record = {"user_id": qq, "nickname": sender["nickname"], "in_group": False}
-                missing.append(record | {"card": sender["groupCard"]})
+                names = {"nickname": sender.get("nickname"), "card": sender.get("groupCard")}
+                # Some had no card in the group, a few no nickname either.
+                missing.append(
+                    {"user_id": qq, "in_group": False} | {k: v for k, v in names.items() if v}
+                )
         for i in range(0, len(missing), 500):
             body = {"observed_at": int(time.time()), "members": missing[i : i + 500]}
             await forum.call("PATCH", f"/bot/groups/{group}/members", body=body)
@@ -207,7 +210,8 @@ async def archive_exports(
         senders.setdefault(group, {}).update(
             (int(m["sender"]["uin"]), m["sender"])
             for m in export["messages"]
-            if m["timestamp"] / 1000 < until and int(m["sender"]["uin"]) != bot
+            # System messages have no sender.
+            if not m["system"] and m["timestamp"] / 1000 < until and m["sender"]["uin"] != str(bot)
         )
         for p in (path.parent / "resources" / "images").glob("*"):
             pictures[p.name.split("_")[0].lower()] = p
