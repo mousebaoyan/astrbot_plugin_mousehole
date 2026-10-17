@@ -232,10 +232,10 @@
         "hint": "填群号；空的收录论坛上关联的所有群。"
       },
       "notify": {
-        "description": "每天早上在群里发收录汇总",
+        "description": "每天上午在群里发收录汇总",
         "type": "bool",
         "default": true,
-        "hint": "每天早上 8 点，每个群发一条：前一天收录的新帖子，@ 发帖人并附上链接，最多列 10 个。关掉后照常收录，汇总不发。"
+        "hint": "每天上午 9 点，每个群发一条：前一天收录的新帖子，@ 发帖人并附上链接，最多列 10 个。关掉后照常收录，汇总不发。"
       },
       "summary": {
         "description": "收录汇总的话",
@@ -246,8 +246,8 @@
       "summary_item": {
         "description": "收录汇总里的每个帖子",
         "type": "text",
-        "default": "{at} {kind}{title}\n{url}",
-        "hint": "{at} 换成 @ 提问或发起讨论的人；{kind} 讨论帖是“（讨论）”，问答帖是空的；{title} 帖子标题，如“预推免第一批和第二批能都报吗”；{url} 帖子链接，如 https://bbs.mousebaoyan.cn/t/42。{forum} 是论坛地址，如 https://bbs.mousebaoyan.cn。"
+        "default": "{n}. {at}\n{kind}{title}\n{url}",
+        "hint": "{n} 序号，如“1”；{at} 换成 @ 提问或发起讨论的人；{kind} 讨论帖是“（讨论）”，问答帖是空的；{title} 帖子标题，如“预推免第一批和第二批能都报吗”；{url} 帖子链接，如 https://bbs.mousebaoyan.cn/t/42。{forum} 是论坛地址，如 https://bbs.mousebaoyan.cn。"
       },
       "summary_more": {
         "description": "收录汇总超过 10 个时的最后一行",

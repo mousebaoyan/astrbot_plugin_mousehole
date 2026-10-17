@@ -70,7 +70,7 @@ QUIET = 1800
 LEAST = 20
 LONGEST = 3 * 3600
 BACKLOG = 150
-SUMMARY_HOUR = 8
+SUMMARY_HOUR = 9
 # Threads a summary names, so that it @s few and doesn't flood the group.
 SUMMARY_ITEMS = 10
 # Seconds before a round the LLM, the embedding model or the forum couldn't be had for, or a
@@ -1093,13 +1093,14 @@ def summary_message(entries: list[dict], site: str, templates: dict[str, str]) -
     items = [
         fill(
             templates["summary_item"],
+            n=i,
             at=[at(e["user"])],
             kind="（讨论）" if e["kind"] == "discussion" else "",
             title=e["title"],
             url=f"{site}/t/{e['thread']}",
             forum=site,
         )
-        for e in entries[:SUMMARY_ITEMS]
+        for i, e in enumerate(entries[:SUMMARY_ITEMS], 1)
     ]
     if len(entries) > SUMMARY_ITEMS:
         items.append(

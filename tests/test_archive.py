@@ -427,7 +427,7 @@ async def test_a_discussion_becomes_a_thread_of_whoever_started_it(setup):
     await s.archive.send_summary()
     [(_, segments)] = s.sent
     assert texts(segments).endswith(
-        f"@{ASKER} （讨论）今年夏令营机试改了题型\nhttps://forum.test/t/{t.id}"
+        f"1. @{ASKER}\n（讨论）今年夏令营机试改了题型\nhttps://forum.test/t/{t.id}"
     )
 
 
@@ -449,8 +449,8 @@ async def test_the_summary_names_each_new_thread_but_not_questions_asked_before(
     # The one asked before was told as it was asked (猜你想问).
     assert texts(segments) == (
         "鼠洞收录了群里的 2 个帖子：\n"
-        f"@{ASKER} {QUESTION['title']}\nhttps://forum.test/t/{first.id}\n"
-        f"@{ANSWERER} 夏令营要带简历吗\nhttps://forum.test/t/{second}"
+        f"1. @{ASKER}\n{QUESTION['title']}\nhttps://forum.test/t/{first.id}\n"
+        f"2. @{ANSWERER}\n夏令营要带简历吗\nhttps://forum.test/t/{second}"
     )
     await s.archive.send_summary()
     assert len(s.sent) == 1
