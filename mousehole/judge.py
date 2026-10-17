@@ -493,7 +493,8 @@ def check(
         if not isinstance(body, str) or not body.strip():
             plan.dropped.append(f"{what}: no body")
             return None
-        return body.strip()
+        # The prompt asks for no full stop at the end, which the LLM doesn't always heed.
+        return body.strip().removesuffix("。")
 
     items = raw.get("new") or []
     refs = [i.get("ref") for i in items if isinstance(i, dict)]
@@ -604,7 +605,7 @@ def check(
             plan.dropped.append(f"{what}: unknown emoji {emoji}")
             continue
         boost = item.get("boost")
-        boost = boost.strip() if isinstance(boost, str) else ""
+        boost = boost.strip().removesuffix("。") if isinstance(boost, str) else ""
         if m.floor is not None or n in taken:
             # Said more, which is in a floor: the reaction goes besides it, the words not twice.
             boost = ""

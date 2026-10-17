@@ -57,6 +57,15 @@ def test_a_floors_messages_are_in_the_order_they_were_said():
     assert [m.number for m in question.messages] == [1, 2]
 
 
+def test_floors_and_boosts_end_without_a_full_stop():
+    numbers = numbered(message(1, 1, "a"), message(2, 2, "b"), message(3, 3, "c"))
+    answer = {"ref": "N2", "type": "reply", "question": "N1", "messages": [2], "body": "可以。"}
+    react = {"message": 3, "post": "N2", "emoji": None, "boost": "学到了。"}
+    plan = check({"new": [QUESTION, answer], "react": [react]}, numbers)
+    assert (plan.questions[0].body, plan.answers[0].body) == ("夏令营要准备哪些材料？", "可以")
+    assert plan.reactions[0].boost == "学到了"
+
+
 def test_a_message_goes_into_one_floor_only():
     numbers = numbered(message(1, 1, "a"))
     answer = {"ref": "N2", "type": "reply", "question": "N1", "messages": [1], "body": "x"}

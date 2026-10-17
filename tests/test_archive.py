@@ -555,3 +555,10 @@ def test_pictures_go_where_the_body_kept_them():
     assert content([shot], "分数线在这。")["markdown"] == (
         "分数线在这。\n\n![](/uploads/a.webp)\n\n![](/uploads/b.webp)"
     )
+
+
+async def test_replies_are_posted_in_the_order_they_were_said(setup):
+    later = {**ANSWER, "ref": "N3", "messages": [4], "body": "我也想知道"}
+    s = setup(Script({"new": [QUESTION, later, ANSWER], "edit": []}))
+    await s.batch(*first_batch(), message(4, OTHER, "我也想知道"))
+    assert [p.created_at for p in thread_of(s).posts] == [message(i, 0).time for i in (1, 3, 4)]

@@ -812,7 +812,8 @@ class Archive:
             if q is not None:
                 asked[item.ref] = q
                 touched.add(q)
-        for item in plan.answers:
+        # In the order they were said, as the LLM may not list them.
+        for item in sorted(plan.answers, key=lambda i: i.messages[0].time):
             question = questions.get(item.question) or asked.get(item.question)
             if question is None:
                 report["dropped"].append(f"new {item.ref}: {item.question} was not posted")
