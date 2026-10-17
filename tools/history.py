@@ -252,6 +252,9 @@ async def archive_exports(
             clock=lambda: now,
         )
         archive.indexed = True
+        if share:
+            # Threads the workers before this one open as they go are left to them.
+            archive.elsewhere = (work[0][1][0].time, share[0][1][0].time)
         await patiently(archive.refresh_taxonomy)
         # A batch stopped halfway goes on; one stopped while being taken in is taken in again.
         for path in archive.pending.glob("*.jsonl"):

@@ -339,6 +339,9 @@ class Archive:
         # The latest floor known of each thread: a floor said earlier is dated no earlier, so
         # the thread reads in order of time.
         self.latest: dict[int, int] = {}
+        # When others archive the history side by side (design §8.10): the threads opened in
+        # this span are theirs, as they may still be posting there.
+        self.elsewhere = (0.0, 0.0)
 
     # ---- Taking messages in
 
@@ -756,9 +759,13 @@ class Archive:
                 if e.code != "message_not_linked":
                     raise
                 continue
-            found.add(await self.thread_question(chat, link["thread_id"]))
+            if not self.theirs(await self.forum.call("GET", f"/threads/{link['thread_id']}")):
+                found.add(await self.thread_question(chat, link["thread_id"]))
         chat.following += [q for q in found if q not in chat.following]
         return found
+
+    def theirs(self, thread: dict) -> bool:
+        return self.elsewhere[0] <= thread["created_at"] < self.elsewhere[1]
 
     async def thread_question(self, chat: Chat, thread: int) -> Question:
         """The question a thread asks: the one followed, or its opening and latest answers
@@ -1094,7 +1101,7 @@ class Archive:
                 continue
             # A floor asked before the thread's last would go above floors said after it, as
             # when the history is archived after the plugin, or by workers side by side.
-            if t["last_post_at"] <= item.messages[0].time:
+            if t["last_post_at"] <= item.messages[0].time and not self.theirs(t):
                 found.append(t)
         if not found:
             return None

@@ -293,6 +293,15 @@ async def test_a_thread_talked_in_after_the_question_was_asked_is_no_candidate(s
     assert (len(s.forum.threads), len(s.llm.prompts)) == (2, 1)
 
 
+async def test_a_thread_another_worker_opened_is_no_candidate(setup):
+    s = setup(Script({"new": [{**QUESTION, "messages": [1]}], "edit": []}))
+    asked = message(2, ASKER, "预推免第一批和第二批能都报吗")
+    await thread_asked_at(s, int(asked.time) - 3600)
+    s.archive.elsewhere = (asked.time - 7200, asked.time - 60)
+    await s.batch(asked)
+    assert (len(s.forum.threads), len(s.llm.prompts)) == (2, 1)
+
+
 async def test_someone_who_turned_archiving_off_is_left_out_with_answers_to_them(setup):
     s = setup(Script({"new": [QUESTION, ANSWER], "edit": []}))
     s.forum.proxy_disabled.add(ASKER)
