@@ -149,8 +149,8 @@ class LLM:
                         raise Unavailable(f"HTTP 429 for {BUSY_WAIT * BUSY_TRIES} seconds")
                     await self.sleep(BUSY_WAIT)
                     continue
-                if res.status_code in (401, 403):
-                    # The key or the IP turned away: nothing to do with the segment.
+                if res.status_code in (401, 402, 403):
+                    # The key, the IP or the quota turned away: nothing to do with the segment.
                     raise Unavailable(f"HTTP {res.status_code}: {text[:200]}")
                 if 400 <= res.status_code < 500:
                     raise LLMError(f"HTTP {res.status_code}: {text[:200]}")

@@ -118,9 +118,10 @@ async def test_asking_again_gives_up_in_the_end_and_bad_answers_are_not_asked_ag
     transport, sent = answering(*["dropped"] * (len(RETRY_WAITS) + 1))
     with pytest.raises(Unavailable):
         await LLM(ECNU, transport, sleep).complete("系统", "提示")
-    transport, sent = answering(401)
-    with pytest.raises(Unavailable):
-        await LLM(ECNU, transport, sleep).complete("系统", "提示")
+    for turned_away in (401, 402):
+        transport, sent = answering(turned_away)
+        with pytest.raises(Unavailable):
+            await LLM(ECNU, transport, sleep).complete("系统", "提示")
     for trouble in ("length", 422):
         transport, sent = answering(trouble)
         with pytest.raises(LLMError):
