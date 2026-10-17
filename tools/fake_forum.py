@@ -73,6 +73,11 @@ class FakeForum:
         self.links: dict[tuple[int, int], int] = {}
         self.keys: dict[str, httpx.Response] = {}
         self.proxy_disabled: set[int] = set()
+        # Who left: frozen, they are only archived; strangers have no account yet.
+        self.frozen: set[int] = set()
+        self.strangers: set[int] = set()
+        # The member records pushed, by group.
+        self.synced: dict[int, list[dict]] = {}
         # Whether the token may make tags.
         self.moderate = True
         self.uploads = 0
@@ -133,8 +138,12 @@ class FakeForum:
         body = json.loads(request.content) if json_body else None
         act_as = request.headers.get("X-Act-As")
         user = int(act_as.removeprefix("qq:")) if act_as else 0
+        if user in self.strangers:
+            return error(404, "unknown_member")
         if request.method != "GET" and user in self.proxy_disabled:
             return error(403, "proxy_disabled")
+        if request.method != "GET" and user in self.frozen and "source" not in (body or {}):
+            return error(403, "member_frozen")
         res = self.route(request.method, path, dict(request.url.params), body, user)
         if key is not None and res.status_code < 500:
             self.keys[key] = res
@@ -204,6 +213,8 @@ class FakeForum:
                 p = self.posts[int(post)]
                 p.boosts[user] = body["body"]
                 return ok({"body": body["body"], "created_at": body.get("created_at")})
+            case "GET", ["users", user] if int(user.removeprefix("qq:")) in self.strangers:
+                return error(404, "not_found")
             case "GET", ["users", user]:
                 return ok({"id": int(user.removeprefix("qq:"))})
             case "GET", ["bot", "messages", "group", group, message]:
@@ -215,6 +226,12 @@ class FakeForum:
                 return ok({"thread_id": self.posts[post_id].thread, "post_id": post_id})
             case "GET", ["search", "similar"]:
                 return ok({"items": self.similar(params["text"])})
+            case "PATCH", ["bot", "groups", group, "members"]:
+                self.synced.setdefault(int(group), []).extend(body["members"])
+                left = {m["user_id"] for m in body["members"] if m.get("in_group") is False}
+                self.frozen |= left
+                self.strangers -= left
+                return ok({"joined": 0, "left": len(left)})
             case "POST", ["uploads"]:
                 self.uploads += 1
                 return httpx.Response(201, json={"url": f"/uploads/00/{self.uploads:064x}.webp"})

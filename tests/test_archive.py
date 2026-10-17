@@ -210,6 +210,15 @@ async def test_what_the_asker_adds_later_rewrites_the_opening_and_its_title(setu
     assert report["done"] == [f"edit {t.posts[0].id}"]
 
 
+async def test_one_who_left_has_the_opening_rewritten_but_keeps_the_title(setup):
+    edit = {"post": "Q1", "messages": [4], "title": "rank 10% 预推免两批能都报吗", "body": "新正文"}
+    s = await asked(setup, {"new": [], "edit": [edit]})
+    s.forum.frozen.add(ASKER)
+    await s.batch(message(4, ASKER, "我 rank 前 10%", reply=3))
+    t = thread_of(s)
+    assert (t.title, t.posts[0].body) == (QUESTION["title"], "新正文")
+
+
 async def test_messages_archived_already_are_not_posted_again(setup):
     again = {**QUESTION, "messages": [1, 4], "title": "又一个标题哦"}
     s = await asked(setup, {"new": [again], "edit": []})

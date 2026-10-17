@@ -18,7 +18,7 @@ def exported(seq, uin, at, elements):
         "id": str(7690000000000000000 + seq),
         "seq": str(seq),
         "timestamp": int(at * 1000),
-        "sender": {"uin": str(uin), "name": f"鼠{uin}"},
+        "sender": {"uin": str(uin), "name": f"鼠{uin}", "nickname": "鼠", "groupCard": f"鼠{uin}"},
         "content": {"elements": elements, "text": "原文"},
         "system": False,
         "recalled": False,
@@ -88,3 +88,18 @@ async def test_what_came_after_until_is_left_to_the_plugin(tmp_path):
     await archive_exports(client, llm, index, [path], data, Tuning(), workers=1, until=EVENING)
     assert len(forum.threads) == 1
     assert len((data / "done.txt").read_text().split()) == 1
+
+
+async def test_who_left_before_the_forum_knew_them_is_archived_under_their_name(tmp_path):
+    forum = FakeForum()
+    forum.strangers.add(ASKER)
+    client = forum.client()
+    index = Index(client, embed, "test", None)
+    llm = Script({"new": [QUESTION, ANSWER], "edit": []}, NOTHING)
+    await archive_exports(client, llm, index, [export(tmp_path)], tmp_path / "data", Tuning(), 1)
+    assert forum.synced[GROUP] == [
+        {"user_id": ASKER, "nickname": "鼠", "in_group": False, "card": f"鼠{ASKER}"}
+    ]
+    [thread] = forum.threads.values()
+    # Their picture too, which the bot uploads for them.
+    assert (thread.author, thread.posts[0].body.count("![](/uploads/")) == (ASKER, 1)

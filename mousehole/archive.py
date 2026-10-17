@@ -1050,8 +1050,14 @@ class Archive:
         if title is not None and title != q.title:
             # Before the floor: a new title is an edit of the opening post too.
             path = f"/threads/{floor.thread}"
-            await self.forum.call("PATCH", path, body={"title": title}, act_as=floor.author)
-            q.title = title
+            try:
+                await self.forum.call("PATCH", path, body={"title": title}, act_as=floor.author)
+                q.title = title
+            except ForumError as e:
+                # Who left keeps the title: only what is archived from the group may be written
+                # for them, and a title carries no messages.
+                if e.code != "member_frozen":
+                    raise
         post = await self.forum.call(
             "PATCH",
             f"/posts/{floor.post}",

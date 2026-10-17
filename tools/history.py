@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import sys
+import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from pathlib import Path
@@ -26,7 +27,7 @@ from mousehole.archive import (
     unavailable,
     until,
 )
-from mousehole.forum import Forum
+from mousehole.forum import Forum, ForumError
 from mousehole.llm import LLM, Embedder, Settings
 from mousehole.similar import Index
 from tools.replay import clock, convert
@@ -97,22 +98,43 @@ def shares(work: list[tuple[int, list[Message]]], count: int) -> list[list[tuple
 
 
 async def upload(forum: Forum, m: Message, pictures: dict[str, Path]) -> None:
-    """Its pictures copied to the forum from the export, those the export kept."""
+    """Its pictures copied to the forum from the export, those the export kept: as the sender,
+    or as the bot for one who left, who uploads nothing, the upload being unarchived."""
     for s in m.segments:
         path = pictures.get((s["data"].get("md5") or "").lower())
         if s["type"] != "image" or is_sticker(s) or path is None:
             continue
+        file = {"file": (path.name, path.read_bytes())}
         try:
             res = await forum.http.post(
-                "/uploads",
-                files={"file": (path.name, path.read_bytes())},
-                headers={"X-Act-As": f"qq:{m.user}"},
+                "/uploads", files=file, headers={"X-Act-As": f"qq:{m.user}"}
             )
+            if res.status_code == 403 and res.json()["error"]["code"] == "member_frozen":
+                res = await forum.http.post("/uploads", files=file)
             res.raise_for_status()
         except httpx.HTTPError as e:
             log.warning("A picture in message %s could not be copied: %r", m.id, e)
             continue
         m.uploads.append(res.json()["url"])
+
+
+async def enroll(forum: Forum, senders: dict[int, dict[int, dict]]) -> None:
+    """Accounts for those who left a group before the forum knew them, as if they had left now:
+    frozen like the others who left, they are archived under their names (design §8.10)."""
+    for group, people in senders.items():
+        missing = []
+        for qq, sender in people.items():
+            try:
+                await forum.call("GET", f"/users/qq:{qq}")
+            except ForumError as e:
+                if e.status != 404:
+                    raise
+                record = {"user_id": qq, "nickname": sender["nickname"], "in_group": False}
+                missing.append(record | {"card": sender["groupCard"]})
+        for i in range(0, len(missing), 500):
+            body = {"observed_at": int(time.time()), "members": missing[i : i + 500]}
+            await forum.call("PATCH", f"/bot/groups/{group}/members", body=body)
+        log.info("Group %s: made accounts for %d who left before the forum", group, len(missing))
 
 
 async def patiently[T](work: Callable[[], Awaitable[T]]) -> T:
@@ -174,14 +196,22 @@ async def archive_exports(
     await patiently(index.rebuild)
     chats: dict[int, dict[int, Message]] = {}
     bots: dict[int, int] = {}
+    senders: dict[int, dict[int, dict]] = {}
     pictures: dict[str, Path] = {}
     for path in exports:
-        group, bot, messages = convert(json.loads(path.read_text(encoding="utf-8")))
+        export = json.loads(path.read_text(encoding="utf-8"))
+        group, bot, messages = convert(export)
         bots[group] = bot
         # Exports may overlap: each message once.
         chats.setdefault(group, {}).update((m.id, m) for m, _, _ in messages if m.time < until)
+        senders.setdefault(group, {}).update(
+            (int(m["sender"]["uin"]), m["sender"])
+            for m in export["messages"]
+            if m["timestamp"] / 1000 < until and int(m["sender"]["uin"]) != bot
+        )
         for p in (path.parent / "resources" / "images").glob("*"):
             pictures[p.name.split("_")[0].lower()] = p
+    await patiently(lambda: enroll(forum, senders))
     work = [
         (group, batch)
         for group, kept in chats.items()
