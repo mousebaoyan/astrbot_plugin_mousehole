@@ -4,16 +4,19 @@ import httpx
 from conftest import defaults
 
 from mousehole import answers
-from mousehole.answers import PER_ROUND, SPREAD, Answers, next_round
+from mousehole.answers import FRESH, PER_HOUR, SETTLE, Answers, next_round
 from mousehole.forum import Forum
 
 GROUP = 100200300
 ASKER = 10001
+START = 1_000_000.0
 
 
-def item(thread: int, *, group: int = GROUP, asker: int = ASKER, count: int = 1) -> dict:
+def item(
+    thread: int, *, group: int = GROUP, asker: int = ASKER, count: int = 1, asked: float = START
+) -> dict:
     return {
-        "thread": {"id": thread, "title": "预推免能报两批吗"},
+        "thread": {"id": thread, "title": "预推免能报两批吗", "created_at": int(asked)},
         "asker": {"id": 7, "display_name": "鼠鼠", "qq": asker},
         "source": {"chat_id": group, "message_id": 555},
         "count": count,
@@ -30,17 +33,20 @@ class FakeQQ:
         self.sent.append((self.clock["t"], group, message))
 
 
-def test_rounds_are_at_ten_sixteen_and_twenty_two_and_none_at_night():
+def test_rounds_are_every_half_hour_from_nine_to_twenty_three():
     def at(*args):
         return datetime(2026, 10, *args).timestamp()
 
-    assert next_round(at(16, 9, 59)) == at(16, 10)
-    assert next_round(at(16, 10)) == at(16, 16)
-    assert next_round(at(16, 22, 30)) == at(17, 10)
+    assert next_round(at(16, 8, 59)) == at(16, 9)
+    assert next_round(at(16, 9)) == at(16, 9, 30)
+    assert next_round(at(16, 12, 45)) == at(16, 13)
+    assert next_round(at(16, 22, 30)) == at(16, 23)
+    assert next_round(at(16, 23)) == at(17, 9)
+    assert next_round(at(17, 0, 10)) == at(17, 9)
 
 
-async def test_a_round_tells_askers_still_in_the_group_spread_over_two_hours(tmp_path, monkeypatch):
-    monkeypatch.setattr(answers.random, "random", lambda: 0.5)
+async def test_reminders_go_to_askers_in_the_group_a_few_an_hour(tmp_path, monkeypatch):
+    monkeypatch.setattr(answers.random, "uniform", lambda a, b: 120)
     asked = []
     found = {"items": []}
 
@@ -48,14 +54,14 @@ async def test_a_round_tells_askers_still_in_the_group_spread_over_two_hours(tmp
         asked.append(dict(request.url.params))
         return httpx.Response(200, json=found)
 
-    clock = {"t": 1_000_000.0}
+    clock = {"t": START}
 
     async def sleep(seconds):
         clock["t"] += max(seconds, 0)
 
     qq = FakeQQ(clock)
     forum = Forum("http://forum.test", "t", httpx.MockTransport(handle))
-    others = [ASKER + n for n in range(1, PER_ROUND + 1)]
+    others = [ASKER + n for n in range(1, PER_HOUR + 2)]
     sync = type(
         "Sync", (), {"groups": [GROUP], "roster": {GROUP: {ASKER, *others}, GROUP + 1: {ASKER}}}
     )()
@@ -73,17 +79,19 @@ async def test_a_round_tells_askers_still_in_the_group_spread_over_two_hours(tmp
     # The first round only marks where the next begins.
     await a.round()
     assert (asked, qq.sent) == ([], [])
+    first = int(START - SETTLE)
 
-    start = clock["t"] = 1_020_000.0
+    clock["t"] = START + 3600
     found["items"] = [
         item(1, count=3),
         item(2, asker=ASKER + 99),  # left the group
         item(3, group=GROUP + 1),  # a group no longer linked
+        item(4, asked=clock["t"] - FRESH - 1),  # asked too long ago
         *(item(10 + n, asker=q) for n, q in enumerate(others)),
     ]
     await a.round()
-    assert asked == [{"since": "1000000", "until": "1020000"}]
-    assert len(qq.sent) == PER_ROUND
+    assert asked == [{"since": str(first), "until": str(int(START + 3600 - SETTLE))}]
+    assert len(qq.sent) == PER_HOUR
     told_at, group, [quote, at, text] = qq.sent[0]
     assert (group, quote, at) == (
         GROUP,
@@ -93,11 +101,15 @@ async def test_a_round_tells_askers_still_in_the_group_spread_over_two_hours(tmp
     assert text["data"]["text"] == (
         " 你问的「预推免能报两批吗」在鼠洞上有 3 条新回答：\nhttps://bbs.test/t/1?floor=3"
     )
-    slot = SPREAD / PER_ROUND
-    assert [t - start for t, _, _ in qq.sent] == [slot * (i + 0.5) for i in range(PER_ROUND)]
+    assert [t - START - 3600 for t, _, _ in qq.sent] == [120, 240, 360]
 
-    # The next round asks from where this one began.
-    found["items"] = []
-    clock["t"] += 3600
+    # Those held are asked for again from the same time, and those told are not told again.
+    clock["t"] = START + 2 * 3600 + 360
     await a.round()
-    assert asked[-1]["since"] == "1020000"
+    assert asked[-1]["since"] == str(first)
+    assert [m[1]["data"]["qq"] for _, _, m in qq.sent[PER_HOUR:]] == [str(q) for q in others[2:]]
+
+    # All told, the next round asks from where this one ended.
+    found["items"] = []
+    await a.round()
+    assert asked[-1]["since"] == str(int(START + 2 * 3600 + 360 - SETTLE))
