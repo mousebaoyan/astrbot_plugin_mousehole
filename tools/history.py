@@ -13,6 +13,7 @@ import sys
 import time
 from collections.abc import Awaitable, Callable
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 
 import httpx
@@ -27,7 +28,7 @@ from mousehole.archive import (
     unavailable,
     until,
 )
-from mousehole.forum import Forum, ForumError
+from mousehole.forum import Forum, ForumError, error_of
 from mousehole.llm import LLM, Embedder, Settings
 from mousehole.similar import Index
 from tools.replay import clock, convert
@@ -98,24 +99,29 @@ def shares(work: list[tuple[int, list[Message]]], count: int) -> list[list[tuple
 
 
 async def upload(forum: Forum, m: Message, pictures: dict[str, Path]) -> None:
-    """Its pictures copied to the forum from the export, those the export kept: as the sender,
-    or as the bot for one who left, who uploads nothing, the upload being unarchived."""
+    """Its pictures copied to the forum from the export, those the export kept."""
     for s in m.segments:
         path = pictures.get((s["data"].get("md5") or "").lower())
         if s["type"] != "image" or is_sticker(s) or path is None:
             continue
-        file = {"file": (path.name, path.read_bytes())}
         try:
-            res = await forum.http.post(
-                "/uploads", files=file, headers={"X-Act-As": f"qq:{m.user}"}
-            )
-            if res.status_code == 403 and res.json()["error"]["code"] == "member_frozen":
-                res = await forum.http.post("/uploads", files=file)
-            res.raise_for_status()
-        except httpx.HTTPError as e:
-            log.warning("A picture in message %s could not be copied: %r", m.id, e)
+            url = await patiently(partial(upload_picture, forum, path, m.user))
+        except ForumError as e:
+            log.warning("A picture in message %s could not be copied: %s", m.id, e)
             continue
-        m.uploads.append(res.json()["url"])
+        m.uploads.append(url)
+
+
+async def upload_picture(forum: Forum, path: Path, user: int) -> str:
+    """Uploaded as the sender, or as the bot for one who left: what is archived for them must
+    come from their messages, and an upload doesn't."""
+    file = {"file": (path.name, path.read_bytes())}
+    res = await forum.http.post("/uploads", files=file, headers={"X-Act-As": f"qq:{user}"})
+    if res.status_code == 403 and res.json()["error"]["code"] == "member_frozen":
+        res = await forum.http.post("/uploads", files=file)
+    if res.is_error:
+        raise error_of(res)
+    return res.json()["url"]
 
 
 async def enroll(forum: Forum, senders: dict[int, dict[int, dict]]) -> None:
