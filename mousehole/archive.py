@@ -336,6 +336,9 @@ class Archive:
         # The day new tags are counted for, and how many were made on it.
         self.tags_day = ""
         self.tags_made = 0
+        # The latest floor known of each thread: a floor said earlier is dated no earlier, so
+        # the thread reads in order of time.
+        self.latest: dict[int, int] = {}
 
     # ---- Taking messages in
 
@@ -764,6 +767,7 @@ class Archive:
             if q.opening and q.floor.thread == thread:
                 return q
         detail = await self.forum.call("GET", f"/threads/{thread}")
+        self.latest[thread] = max(self.latest.get(thread, 0), detail["last_post_at"])
         path = f"/threads/{thread}/posts"
         first = await self.forum.call("GET", path, params={"after": 0, "body": "markdown"})
         latest = await self.forum.call(
@@ -864,6 +868,7 @@ class Archive:
         self, q: Question, post: dict, author: int, messages: list[Message], body: str
     ) -> Floor:
         floor = Floor(post["id"], post["thread_id"], author, messages, body, post["edited_at"], q)
+        self.latest[floor.thread] = max(self.latest.get(floor.thread, 0), post["created_at"])
         for m in messages:
             m.floor = floor
         return floor
@@ -936,6 +941,7 @@ class Archive:
             if e.status != 404:
                 raise
             return None
+        self.latest[thread] = max(self.latest.get(thread, 0), detail["last_post_at"])
         return None if detail["locked"] else detail
 
     async def make_tags(self, item: judge.NewQuestion, report: dict) -> list[str]:
@@ -991,7 +997,7 @@ class Archive:
         payload = {
             "content": content(messages, body),
             "source": self.source(chat, messages),
-            "created_at": int(messages[0].time),
+            "created_at": max(int(messages[0].time), self.latest.get(thread, 0)),
         }
         if reply_to is not None:
             payload["reply_to_id"] = reply_to.post

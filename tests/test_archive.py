@@ -562,3 +562,16 @@ async def test_replies_are_posted_in_the_order_they_were_said(setup):
     s = setup(Script({"new": [QUESTION, later, ANSWER], "edit": []}))
     await s.batch(*first_batch(), message(4, OTHER, "我也想知道"))
     assert [p.created_at for p in thread_of(s).posts] == [message(i, 0).time for i in (1, 3, 4)]
+
+
+async def test_a_reply_said_before_its_thread_was_opened_is_dated_no_earlier(setup):
+    question = {**QUESTION, "messages": [2, 3]}
+    early = {**ANSWER, "messages": [1], "body": "先说一句"}
+    s = setup(Script({"new": [question, early], "edit": []}))
+    await s.batch(
+        message(1, ANSWERER, "先说一句"),
+        message(2, ASKER, "大家预推免第一批和第二批"),
+        message(3, ASKER, "能都报吗"),
+    )
+    opening, reply = thread_of(s).posts
+    assert reply.created_at == opening.created_at == message(2, 0).time
