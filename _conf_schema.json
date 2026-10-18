@@ -149,6 +149,36 @@
       }
     }
   },
+  "bounty": {
+    "description": "悬赏",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "每天 20 点在群里列出论坛上新悬赏的问题",
+        "type": "bool",
+        "default": true,
+        "hint": "论坛上发的问题一天没人回答，论坛就拿出鼠币悬赏。每个群每天最多一条，没有新的悬赏就不发。"
+      },
+      "groups": {
+        "description": "发到哪些群",
+        "type": "list",
+        "default": [],
+        "hint": "填群号；空的发到论坛上关联的所有群。"
+      },
+      "template": {
+        "description": "悬赏的话",
+        "type": "text",
+        "default": "【鼠洞悬赏】这几个问题在鼠洞上一天没人回答，回复得 {reply} 鼠币，被采纳再得 {answer} 鼠币：\n{items}",
+        "hint": "{items} 换成悬赏的问题，每个一行，写法见下一项，最多 5 个；{reply} 回复得几个鼠币，如“1”；{answer} 被采纳再得几个，如“5”。{forum} 是论坛地址，如 https://bbs.mousebaoyan.cn。"
+      },
+      "item": {
+        "description": "悬赏里的每个问题",
+        "type": "text",
+        "default": "{n}. {title}\n{url}",
+        "hint": "{n} 序号，如“1”；{title} 帖子标题，如“预推免的英语面试一般问什么”；{url} 帖子链接，如 https://bbs.mousebaoyan.cn/t/17。{forum} 是论坛地址。"
+      }
+    }
+  },
   "welcome": {
     "description": "入群欢迎",
     "type": "object",

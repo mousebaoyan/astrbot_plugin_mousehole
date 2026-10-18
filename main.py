@@ -9,6 +9,7 @@ from astrbot.api.star import Context, Star, StarTools
 
 from .mousehole.answers import Answers
 from .mousehole.archive import Archive, Message, Tuning, plain
+from .mousehole.bounties import Bounties
 from .mousehole.cards import Cards
 from .mousehole.events import Events
 from .mousehole.forum import Forum, ForumError
@@ -132,6 +133,20 @@ class Mousehole(Star):
             if c["answers"]["enabled"]
             else None
         )
+        bounty = c["bounty"]
+        self.bounties = (
+            Bounties(
+                self.forum,
+                self.qq,
+                self.sync,
+                data / "bounties.json",
+                groups=[int(g) for g in bounty["groups"]],
+                templates=bounty,
+                site=c["forum_url"],
+            )
+            if bounty["enabled"]
+            else None
+        )
         welcome = c["welcome"]
         self.welcome = (
             Welcome(
@@ -178,6 +193,8 @@ class Mousehole(Star):
             self.tasks.append(asyncio.create_task(self.weekly.run()))
         if self.answers:
             self.tasks.append(asyncio.create_task(self.answers.run()))
+        if self.bounties:
+            self.tasks.append(asyncio.create_task(self.bounties.run()))
         if self.welcome:
             self.tasks.append(asyncio.create_task(self.welcome.run()))
 
