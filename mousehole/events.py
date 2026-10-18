@@ -183,4 +183,4 @@ class Events:
                     data["thread"]["id"], data["thread"]["title"], data["post"]["body"]
                 )
             case "post.deleted" if self.index and data["floor"] == 1:
-                self.index.remove(data["thread_id"])
+                await self.index.remove(data["thread_id"])

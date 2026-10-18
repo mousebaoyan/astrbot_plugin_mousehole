@@ -251,7 +251,6 @@ async def archive_exports(
             tuning=tuning,
             clock=lambda: now,
         )
-        archive.indexed = True
         if share:
             # Threads the workers before this one open as they go are left to them.
             archive.elsewhere = (work[0][1][0].time, share[0][1][0].time)

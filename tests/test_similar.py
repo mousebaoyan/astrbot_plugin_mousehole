@@ -40,7 +40,7 @@ async def test_the_index_is_built_from_the_forum_kept_in_a_file_and_rebuilt_for_
     await index.load()
     assert sorted(index.ids.tolist()) == [first["id"], second["id"]]
 
-    index.remove(second["id"])
+    await index.remove(second["id"])
     again = Index(forum, vectors(table), "bge-m3", path)
     await again.load()
     assert again.ids.tolist() == [first["id"]]
@@ -52,3 +52,19 @@ async def test_the_index_is_built_from_the_forum_kept_in_a_file_and_rebuilt_for_
     found = await other.candidates("夏令营要什么材料", "")
     assert found[0] == first["id"]
     assert np.allclose(np.linalg.norm(other.vectors, axis=1), 1)
+
+
+async def test_a_thread_put_before_the_index_is_used_joins_the_saved_ones(tmp_path):
+    fake = FakeForum()
+    forum = fake.client()
+    first = await post(forum, "夏令营材料", 1)
+    table = {"夏令营材料": [1.0, 0.0], "预推免撤回": [0.0, 1.0]}
+    path = tmp_path / "threads.npz"
+    await Index(forum, vectors(table), "bge-m3", path).load()
+
+    # The plugin starts again, and the event stream brings a new thread before any search.
+    index = Index(forum, vectors(table), "bge-m3", path)
+    await index.put(99, "预推免撤回", "正文")
+    again = Index(forum, vectors(table), "bge-m3", path)
+    await again.load()
+    assert sorted(again.ids.tolist()) == [first["id"], 99]

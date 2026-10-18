@@ -1,6 +1,7 @@
 """Threads like a new question (design §8.5): vectors of every thread's title and opening, kept
 here, together with the forum's own literal search."""
 
+import asyncio
 import io
 import logging
 from collections.abc import Awaitable, Callable
@@ -45,15 +46,23 @@ class Index:
         self.path = path
         self.ids = np.empty(0, dtype=np.int64)
         self.vectors = np.empty((0, 0), dtype=np.float32)
+        self.loaded = False
+        self.loading = asyncio.Lock()
 
     async def load(self) -> None:
-        """From the file, or from the forum when there is none or it was made by another model."""
-        if self.path is not None and self.path.exists():
-            with np.load(self.path) as saved:
-                if str(saved["model"]) == self.model:
-                    self.ids, self.vectors = saved["ids"], saved["vectors"]
-                    return
-        await self.rebuild()
+        """From the file, or from the forum when there is none or it was made by another model;
+        once, before the index is first searched or changed: a thread put in an index not loaded
+        yet would be saved over all the others."""
+        async with self.loading:
+            if self.loaded:
+                return
+            if self.path is not None and self.path.exists():
+                with np.load(self.path) as saved:
+                    if str(saved["model"]) == self.model:
+                        self.ids, self.vectors = saved["ids"], saved["vectors"]
+                        self.loaded = True
+                        return
+            await self.rebuild()
 
     async def rebuild(self) -> None:
         texts: dict[int, str] = {}
@@ -73,6 +82,7 @@ class Index:
             vectors += await self.embed(values[i : i + EMBED_BATCH])
         self.ids = np.array(list(texts), dtype=np.int64)
         self.vectors = normalized(vectors) if vectors else np.empty((0, 0), dtype=np.float32)
+        self.loaded = True
         self.save()
         log.info("Rebuilt the thread index: %d threads", len(self.ids))
 
@@ -84,19 +94,22 @@ class Index:
         write_file(self.path, saved.getvalue())
 
     async def put(self, thread: int, title: str, opening: str) -> None:
+        await self.load()
         vector = normalized(await self.embed([text_of(title, opening)]))
         keep = self.ids != thread
         self.vectors = np.vstack([self.vectors[keep], vector]) if len(self.ids) else vector
         self.ids = np.append(self.ids[keep], thread)
         self.save()
 
-    def remove(self, thread: int) -> None:
+    async def remove(self, thread: int) -> None:
+        await self.load()
         keep = self.ids != thread
         self.ids, self.vectors = self.ids[keep], self.vectors[keep]
         self.save()
 
     async def nearest(self, text: str, count: int, at_least: float) -> list[int]:
         """The threads most like the text in meaning, as like as `at_least` at least."""
+        await self.load()
         if not len(self.ids):
             return []
         query = normalized(await self.embed([text]))[0]

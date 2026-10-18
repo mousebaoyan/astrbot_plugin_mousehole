@@ -327,7 +327,6 @@ class Archive:
         if self.state_file.exists():
             self.state = json.loads(self.state_file.read_text(encoding="utf-8"))
         self.chats: dict[int, Chat] = {}
-        self.indexed = False
         self.boards: list[dict] = []
         self.tags: list[str] = []
         # The day new tags are counted for, and how many were made on it.
@@ -490,11 +489,8 @@ class Archive:
         """The forum and the embedding model there before the LLM is paid for a segment they
         would fail, with the boards and tags of the day and the thread index."""
         await self.refresh_taxonomy()
-        if not self.indexed:
-            await self.index.load()
-            self.indexed = True
-        else:
-            await self.index.embed(["鼠洞"])
+        await self.index.load()
+        await self.index.embed(["鼠洞"])
 
     async def refresh_taxonomy(self) -> None:
         boards = (await self.forum.call("GET", "/boards"))["items"]
@@ -1089,7 +1085,7 @@ class Archive:
             except ForumError as e:
                 if e.status != 404:
                     raise
-                self.index.remove(thread)
+                await self.index.remove(thread)
                 continue
             # A floor asked before the thread's last would go above floors said after it, as
             # when the history is archived after the plugin, or by workers side by side.
