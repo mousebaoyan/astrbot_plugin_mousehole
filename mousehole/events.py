@@ -1,6 +1,6 @@
 """The forum's event stream (design §10), and what it sets off: QQ signatures for members who
-just activated, lottery results and gold badges in the groups, and the thread index kept
-current."""
+just activated, lottery results and gold badges in the groups, and auto-archiving kept current
+with the forum: its thread index, and threads merged."""
 
 import asyncio
 import json
@@ -11,15 +11,15 @@ from typing import Any
 
 import httpx
 
+from .archive import Archive
 from .files import write_file
 from .forum import Forum, ForumError
 from .qq import QQ, at, fill, joined, text
-from .similar import Index
 from .sync import Sync
 
 log = logging.getLogger("astrbot.plugin.astrbot_plugin_mousehole")
 
-INDEX_TYPES = ["thread.created", "post.updated", "post.deleted"]
+ARCHIVE_TYPES = ["thread.created", "post.updated", "post.deleted", "thread.merged"]
 BATCH = 500
 # Seconds before each reconnection in a row; then every minute.
 RECONNECT = [1, 2, 5, 10, 30, 60]
@@ -80,7 +80,7 @@ class Events:
         lottery: list[int] | None,
         badges: bool,
         bio: bool,
-        index: Index | None,
+        archive: Archive | None,
         site: str,
         lottery_templates: dict[str, str],
         badge_template: str,
@@ -93,14 +93,14 @@ class Events:
         self.sync = sync
         self.state = state
         self.lottery = lottery
-        self.index = index
+        self.archive = archive
         self.site = site
         self.lottery_templates = lottery_templates
         self.badge_template = badge_template
         types = ["member.activated"] if bio else []
         types += ["lottery.drawn"] if lottery is not None else []
         types += ["badge.granted"] if badges else []
-        self.types = ",".join(types + (INDEX_TYPES if index else []))
+        self.types = ",".join(types + (ARCHIVE_TYPES if archive else []))
 
     def load(self) -> int | None:
         return json.loads(self.state.read_text())["cursor"] if self.state.exists() else None
@@ -176,11 +176,13 @@ class Events:
                         await self.qq.send_group(
                             group, badge_message(data, self.badge_template, self.site)
                         )
-            case "thread.created" if self.index:
-                await self.index.thread_created(data["thread"]["id"])
-            case "post.updated" if self.index and data["post"]["floor"] == 1:
-                await self.index.put(
+            case "thread.created" if self.archive:
+                await self.archive.index.thread_created(data["thread"]["id"])
+            case "post.updated" if self.archive and data["post"]["floor"] == 1:
+                await self.archive.index.put(
                     data["thread"]["id"], data["thread"]["title"], data["post"]["body"]
                 )
-            case "post.deleted" if self.index and data["floor"] == 1:
-                await self.index.remove(data["thread_id"])
+            case "post.deleted" if self.archive and data["floor"] == 1:
+                await self.archive.index.remove(data["thread_id"])
+            case "thread.merged" if self.archive:
+                await self.archive.merged(data["thread_id"], data["into"]["id"])

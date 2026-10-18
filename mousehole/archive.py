@@ -784,6 +784,23 @@ class Archive:
         q.answers = [fetched(p) for p in latest["items"] if p["floor"] > 1 and not p["deleted"]]
         return q
 
+    async def merged(self, thread: int, into: int) -> None:
+        """A thread merged into another on the forum (design §8.20): what is followed of it goes
+        on in the one kept, where its question is a floor now rather than the opening post."""
+        await self.index.remove(thread)
+        await self.index.thread_created(into)
+        if thread in self.latest:
+            self.latest[into] = max(self.latest.pop(thread), self.latest.get(into, 0))
+        for chat in self.chats.values():
+            floors = [f for m in chat.kept for f in (m.floor, m.reacted) if f is not None]
+            for q in chat.following:
+                floors += [q.floor, *q.answers]
+                if q.floor.thread == thread:
+                    q.opening = False
+            for f in floors:
+                if f.thread == thread:
+                    f.thread = into
+
     async def carry_out(
         self,
         chat: Chat,

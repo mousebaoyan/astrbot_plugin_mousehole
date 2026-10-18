@@ -53,7 +53,6 @@ class Mousehole(Star):
         self.forum = Forum(c["forum_url"], c["token"])
         self.qq = QQ(self.context.platform_manager, c["platform_id"])
         self.sync = Sync(self.forum, self.qq, members=c["sync_members"])
-        index = None
         self.archive_groups = {int(g) for g in c["archive"]["groups"]}
         e, m = c["embedding"], c["llm"]
         if c["archive"]["enabled"] and not all(
@@ -108,7 +107,7 @@ class Mousehole(Star):
             lottery=[int(g) for g in lottery["groups"]] if lottery["enabled"] else None,
             badges=c["badges"]["enabled"],
             bio=c["push_bio"],
-            index=index,
+            archive=self.archive,
             site=c["forum_url"],
             lottery_templates=lottery,
             badge_template=c["badges"]["template"],

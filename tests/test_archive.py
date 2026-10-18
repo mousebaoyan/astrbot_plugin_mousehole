@@ -283,6 +283,25 @@ async def thread_asked_at(s, time: int) -> int:
     return older["id"]
 
 
+async def test_a_thread_merged_on_the_forum_goes_on_in_the_one_kept(setup):
+    edit = {"post": "Q1", "messages": [5], "title": "预推免两批都报会怎样", "body": "新正文"}
+    answer = {**ANSWER, "question": "Q1", "messages": [4], "reply_to": "A1"}
+    s = await asked(setup, {"new": [answer], "edit": [edit]})
+    gone = thread_of(s)
+    kept = s.forum.threads[await thread_asked_at(s, int(first_batch()[0].time) - 3600)]
+    # As the forum merges them: the floors go over in order of time, the thread is gone.
+    kept.posts += gone.posts
+    for floor, p in enumerate(kept.posts, 1):
+        p.thread, p.floor = kept.id, floor
+    gone.deleted = True
+
+    await s.archive.merged(gone.id, kept.id)
+    await s.batch(message(4, OTHER, "第二批名额少很多", reply=3), message(5, ASKER, "我 rank 10%"))
+    # The reply goes on quoting the answer, and the asker's floor is rewritten, not the title.
+    assert [(p.author, p.reply_to) for p in kept.posts[3:]] == [(OTHER, kept.posts[2].id)]
+    assert (kept.title, kept.posts[1].body) == ("预推免第一批第二批", "新正文")
+
+
 async def test_a_question_some_older_thread_asks_goes_there(setup):
     s = setup(Script({"new": [{**QUESTION, "messages": [1]}], "edit": []}, {"same": "C1"}))
     asked = message(2, ASKER, "预推免第一批和第二批能都报吗")
