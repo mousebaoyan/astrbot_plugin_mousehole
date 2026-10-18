@@ -29,11 +29,10 @@ class LLMError(Exception):
 
 
 class Truncated(LLMError):
-    """The answer reached max_tokens before its JSON was whole, which was paid for all the
-    same."""
+    """The model thought so long it gave no whole answer, which was paid for all the same."""
 
     def __init__(self, input_tokens: int, output_tokens: int):
-        super().__init__(f"the answer reached max_tokens ({output_tokens})")
+        super().__init__(f"no whole answer after {output_tokens} tokens")
         self.input_tokens = input_tokens
         self.output_tokens = output_tokens
 
@@ -167,8 +166,9 @@ class LLM:
             failures += 1
         tokens = usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
         self.spent += sum(tokens)
-        if finish == "length":
-            # Thought all it may: another try at the same would too.
+        # Thought all it may, or, as Step does after 30k tokens or so of thinking, stopped with
+        # nothing said: another try at the same would too.
+        if finish == "length" or answer == "":
             raise Truncated(*tokens)
         return answer, *tokens
 

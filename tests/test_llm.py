@@ -11,6 +11,7 @@ from mousehole.llm import (
     BudgetExhausted,
     LLMError,
     Settings,
+    Truncated,
     Unavailable,
 )
 
@@ -20,7 +21,8 @@ ECNU = Settings("https://chat.ecnu.edu.cn/open/api/v1", "key", "ecnu-plus")
 def answering(*troubles):
     """A fake API answering with these in turn, then with a whole answer; keeps what it was
     sent. A trouble is a status, "dropped" for a connection lost, "broken" for a stream that
-    stops before the answer, "length" for an answer that reached max_tokens."""
+    stops before the answer, "length" for an answer that reached max_tokens, "empty" for one that
+    stopped after thinking with nothing said."""
     sent, left = [], list(troubles)
 
     def handle(request: httpx.Request) -> httpx.Response:
@@ -30,13 +32,13 @@ def answering(*troubles):
             return httpx.Response(trouble, text="busy")
         if trouble == "dropped":
             raise httpx.RemoteProtocolError("peer closed connection")
-        chunks = [
-            {"choices": [{"delta": {"reasoning_content": "想想"}}]},
-            {"choices": [{"delta": {"content": '{"same"'}}]},
-        ]
+        chunks = [{"choices": [{"delta": {"reasoning_content": "想想"}}]}]
+        if trouble != "empty":
+            chunks.append({"choices": [{"delta": {"content": '{"same"'}}]})
         if trouble != "broken":
             finish = "length" if trouble == "length" else "stop"
-            chunks.append({"choices": [{"delta": {"content": ": null}"}, "finish_reason": finish}]})
+            content = "" if trouble == "empty" else ": null}"
+            chunks.append({"choices": [{"delta": {"content": content}, "finish_reason": finish}]})
             chunks.append(
                 {"choices": [], "usage": {"prompt_tokens": 600, "completion_tokens": 400}}
             )
@@ -125,9 +127,10 @@ async def test_asking_again_gives_up_in_the_end_and_bad_answers_are_not_asked_ag
         transport, sent = answering(turned_away)
         with pytest.raises(Unavailable):
             await LLM(ECNU, transport, sleep).complete("系统", "提示")
-    for trouble in ("length", 422):
+    # Thought too long over: the segment is split in halves.
+    for trouble, error in (("length", Truncated), ("empty", Truncated), (422, LLMError)):
         transport, sent = answering(trouble)
-        with pytest.raises(LLMError):
+        with pytest.raises(error):
             await LLM(ECNU, transport, sleep).complete("系统", "提示")
         assert len(sent) == 1
 
