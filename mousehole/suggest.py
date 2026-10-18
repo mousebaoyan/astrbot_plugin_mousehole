@@ -27,11 +27,14 @@ QUESTION_WORDS = (
 MIN_CHARS = 6
 # Asked of someone (你, not 你们): between people, which no thread answers.
 OF_SOMEONE = re.compile("你(?!们)")
-# Candidates for a question, by meaning alone and only those this alike: on October's messages
-# against 144 threads, 0.6 let through 30 questions a day, most of them chatter, and 0.65 seven,
-# a few asked again; the literal search would bring in most of the chatter.
+# Candidates for a question, by meaning alone: the literal search would bring in most of the
+# chatter. Of the threads this alike, the NEAREST are looked at in turn for the first CANDIDATES
+# that may answer it. On 802 questions of 10-16 to 10-18 against 962 threads with replies, 0.65
+# let through 50 a day, those below 0.7 nearly all chatter; 0.7 let through 22, with nearly all
+# that a thread answers.
+SIMILARITY = 0.7
+NEAREST = 10
 CANDIDATES = 3
-SIMILARITY = 0.65
 # Replies a group gets a round at most, so that the bot doesn't flood it.
 REPLIES_A_ROUND = 2
 # Seconds before a thread is told to a group again.
@@ -138,10 +141,11 @@ class Suggest:
         return replies.total(), tokens
 
     async def threads_for(self, group: int, m: Message) -> list[dict]:
-        """The threads that may answer it: with replies, not the asker's own, not told lately."""
+        """The threads that may answer it, the most alike first: with replies, not the asker's
+        own, not told lately."""
         asker = await self.user(m.user)
-        found = []
-        for thread in await self.index.nearest(text_of(m), CANDIDATES, SIMILARITY):
+        found: list[dict] = []
+        for thread in await self.index.nearest(text_of(m), NEAREST, SIMILARITY):
             if (group, thread) in self.told:
                 continue
             try:
@@ -153,6 +157,8 @@ class Suggest:
             if t["reply_count"] and t["author"].get("id") != asker:
                 t["created"] = datetime.fromtimestamp(t["created_at"]).strftime("%Y-%m-%d")
                 found.append(t)
+                if len(found) == CANDIDATES:
+                    break
         return found
 
     async def user(self, qq: int) -> int | None:
