@@ -265,6 +265,27 @@ async def test_a_reply_to_a_floor_deleted_on_the_forum_is_posted_without_quoting
     assert report["dropped"] == []
 
 
+async def test_a_floor_posted_in_another_thread_when_its_segment_was_tried_before_is_found(
+    setup,
+):
+    answer = {**ANSWER, "ref": "N3", "question": "Q1", "messages": [4]}
+    s = await asked(setup, {"new": [answer], "edit": []})
+    other = await thread_asked_at(s, int(first_batch()[0].time))
+    elsewhere = await s.forum.client().call(
+        "POST",
+        f"/threads/{other}/posts",
+        body={
+            "content": {"onebot": [{"type": "text", "data": {"text": "第二批名额少很多"}}]},
+            "source": {"chat_type": "group", "chat_id": GROUP, "message_ids": [4]},
+        },
+        act_as=OTHER,
+        key=f"qq-{GROUP}-4-post",
+    )
+    report = await s.batch(message(4, OTHER, "第二批名额少很多"))
+    assert (report["done"], len(thread_of(s).posts)) == (["new N3"], 2)
+    assert s.archive.chats[GROUP].by_id[4].floor.post == elsewhere["id"]
+
+
 async def thread_asked_at(s, time: int) -> int:
     older = await s.forum.client().call(
         "POST",

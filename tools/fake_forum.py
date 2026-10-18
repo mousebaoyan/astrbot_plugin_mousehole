@@ -72,7 +72,8 @@ class FakeForum:
         self.posts: dict[int, Post] = {}
         # (group, message id) → post id
         self.links: dict[tuple[int, int], int] = {}
-        self.keys: dict[str, httpx.Response] = {}
+        # Idempotency key → the request it was first used on, and the answer when it succeeded.
+        self.keys: dict[str, tuple[tuple[str, str], httpx.Response]] = {}
         self.proxy_disabled: set[int] = set()
         # Who left: frozen, they are only archived; strangers have no account yet.
         self.frozen: set[int] = set()
@@ -158,9 +159,10 @@ class FakeForum:
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         key = request.headers.get("Idempotency-Key")
-        if key in self.keys:
-            return self.keys[key]
         path = request.url.path.removeprefix("/api/v1")
+        if key in self.keys:
+            first, res = self.keys[key]
+            return res if first == (request.method, path) else error(422, "idempotency_key_reused")
         json_body = request.headers.get("Content-Type") == "application/json"
         body = json.loads(request.content) if json_body else None
         act_as = request.headers.get("X-Act-As")
@@ -172,8 +174,8 @@ class FakeForum:
         if request.method != "GET" and user in self.frozen and "source" not in (body or {}):
             return error(403, "member_frozen")
         res = self.route(request.method, path, dict(request.url.params), body, user)
-        if key is not None and res.status_code < 500:
-            self.keys[key] = res
+        if key is not None and res.status_code < 400:
+            self.keys[key] = ((request.method, path), res)
         return res
 
     def route(self, method: str, path: str, params: dict, body: Any, user: int) -> httpx.Response:
