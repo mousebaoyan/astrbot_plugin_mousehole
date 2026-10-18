@@ -25,6 +25,7 @@
 | `uv run python -m tools.replay …` | 回放历史群消息，见[回放实验](docs/replay.md) |
 | `uv run python -m tools.history …` | 把导出的历史群消息收录到论坛，见设计第 8.10 节 |
 | `uv run python -m tools.boards …` | 在论坛上建收录用的版块和标签（设计第 8.9 节） |
+| `uv run python -m tools.duplicates …` | 列出论坛上很像的帖子，人工确认后合并（设计第 8.10 节） |
 
 ## 语言
 
