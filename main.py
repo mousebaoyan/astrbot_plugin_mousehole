@@ -1,6 +1,8 @@
 """AstrBot entry: listens to NapCat's events and runs the plugin's background work."""
 
 import asyncio
+from collections.abc import Coroutine
+from typing import Any
 
 import httpx
 from astrbot.api import AstrBotConfig, logger
@@ -164,11 +166,16 @@ class Mousehole(Star):
             if c["cards"]["enabled"]
             else None
         )
-        self.tasks = [asyncio.create_task(self.start())]
+        self.spawn(self.start())
         # When AstrBot starts, plugins load before the platforms; installed or reloaded later,
         # the platform is already there.
         if self.qq.found():
             self.listen()
+
+    def spawn(self, work: Coroutine[Any, Any, None]) -> None:
+        task = asyncio.create_task(work)
+        task.add_done_callback(stopped)
+        self.tasks.append(task)
 
     async def start(self) -> None:
         # Groups are known before any event or message is acted on, even if the forum is down
@@ -180,23 +187,23 @@ class Mousehole(Star):
             except (ForumError, httpx.HTTPError) as e:
                 logger.warning("鼠洞插件：连不上论坛（%s），%d 秒后再试", e, START_RETRY)
                 await asyncio.sleep(START_RETRY)
-        self.tasks.append(asyncio.create_task(self.sync.run()))
+        self.spawn(self.sync.run())
         if self.events.types:
-            self.tasks.append(asyncio.create_task(self.events.run()))
+            self.spawn(self.events.run())
         if self.archive:
-            self.tasks.append(asyncio.create_task(self.archive.run()))
+            self.spawn(self.archive.run())
         if self.suggest:
-            self.tasks.append(asyncio.create_task(self.suggest.run()))
+            self.spawn(self.suggest.run())
         if self.summaries:
-            self.tasks.append(asyncio.create_task(self.summaries.run()))
+            self.spawn(self.summaries.run())
         if self.weekly:
-            self.tasks.append(asyncio.create_task(self.weekly.run()))
+            self.spawn(self.weekly.run())
         if self.answers:
-            self.tasks.append(asyncio.create_task(self.answers.run()))
+            self.spawn(self.answers.run())
         if self.bounties:
-            self.tasks.append(asyncio.create_task(self.bounties.run()))
+            self.spawn(self.bounties.run())
         if self.welcome:
-            self.tasks.append(asyncio.create_task(self.welcome.run()))
+            self.spawn(self.welcome.run())
 
     async def history(self, group: int, before: int | None) -> list[dict]:
         """A page of the group's history from NapCat, up to the message `before` or the latest."""
@@ -283,3 +290,10 @@ class Mousehole(Star):
         if self.archive is None or group not in self.sync.groups:
             return False
         return not self.archive_groups or group in self.archive_groups
+
+
+def stopped(task: asyncio.Task) -> None:
+    # The loops run till the plugin stops and log their own errors. One that raised anyway has
+    # stopped its part of the plugin, unseen otherwise: the task is kept till then.
+    if not task.cancelled() and task.exception():
+        logger.error("%s stopped", task.get_coro().__qualname__, exc_info=task.exception())
