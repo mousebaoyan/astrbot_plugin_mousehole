@@ -100,6 +100,16 @@ def test_edits_take_only_their_writers_new_messages():
     assert plan.dropped == ["edit Q1: messages by more than one person"]
 
 
+def test_an_edit_of_a_floor_made_in_the_same_answer_goes_into_it():
+    numbers = numbered(message(1, 1, "a"), message(2, 2, "b"), message(3, 1, "c"))
+    edit = {"post": "N1", "messages": [1, 3], "title": None, "body": "a 和 c"}
+    plan = check({"new": [QUESTION], "edit": [edit, edit | {"messages": [2]}]}, numbers)
+    (question,) = plan.questions
+    assert ([m.number for m in question.messages], question.body) == ([1, 3], "a 和 c")
+    assert question.title == QUESTION["title"]
+    assert (plan.edits, plan.dropped) == ([], ["edit N1: messages by more than one person"])
+
+
 def test_json_is_found_in_what_the_model_wraps_it_in():
     assert judge.extract_json('好的：\n```json\n{"new": []}\n```') == {"new": []}
     with pytest.raises(ValueError):

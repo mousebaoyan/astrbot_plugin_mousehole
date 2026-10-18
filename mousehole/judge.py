@@ -473,14 +473,16 @@ def check(
         return plan
     taken: set[int] = set()
 
-    def messages_of(item: dict, what: str, floor: Floor | None = None) -> list[Message] | None:
+    def messages_of(
+        item: dict, what: str, had: list[Message] | None = None, by: int | None = None
+    ) -> list[Message] | None:
         """The messages an item is organized from: all new, all one person's. An edit may name
-        the messages its floor has already."""
+        the messages its floor `had` already, and adds only those of `by`, who wrote it."""
         ids = item.get("messages")
         if not isinstance(ids, list) or not ids:
             plan.dropped.append(f"{what}: no messages")
             return None
-        own = {m.number for m in floor.messages} if floor else set()
+        own = {m.number for m in had or []}
         found = []
         for n in ids:
             if n in own:
@@ -497,7 +499,7 @@ def check(
         if not found:
             plan.dropped.append(f"{what}: nothing new")
             return None
-        if len({m.user for m in found} | ({floor.author} if floor else set())) > 1:
+        if len({m.user for m in found} | ({by} if by is not None else set())) > 1:
             plan.dropped.append(f"{what}: messages by more than one person")
             return None
         author = item.get("author")
@@ -584,17 +586,30 @@ def check(
         else:
             plan.dropped.append(f"{what}: unknown type {item.get('type')}")
 
+    made = {i.ref: i for i in plan.questions + plan.answers}
     for item in raw.get("edit") or []:
         if not isinstance(item, dict):
             continue
-        floor = floors.get(item.get("post"))
         what = f"edit {item.get('post')}"
+        if (new := made.get(item.get("post"))) is not None:
+            # The LLM sometimes adds to a floor it is making in the same answer as if it were
+            # there already: the floor is made with the messages added and the body rewritten.
+            body = body_of(item, what)
+            messages = messages_of(item, what, new.messages, new.messages[0].user) if body else None
+            if messages is None:
+                continue
+            new.messages = sorted(new.messages + messages, key=lambda m: m.number)
+            new.body = body
+            if isinstance(new, NewQuestion):
+                new.title = title_of(item.get("title")) or new.title
+            continue
+        floor = floors.get(item.get("post"))
         if floor is None or not floor.messages:
             # Floors fetched back from the forum are there to read, not to rewrite.
             plan.dropped.append(f"{what}: not a floor that can be edited")
             continue
         body = body_of(item, what)
-        messages = messages_of(item, what, floor) if body else None
+        messages = messages_of(item, what, floor.messages, floor.author) if body else None
         if messages is None:
             continue
         question = floor.question
