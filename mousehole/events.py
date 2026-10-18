@@ -11,6 +11,7 @@ from typing import Any
 
 import httpx
 
+from .files import write_file
 from .forum import Forum, ForumError
 from .qq import QQ, at, fill, joined, text
 from .similar import Index
@@ -105,9 +106,7 @@ class Events:
         return json.loads(self.state.read_text())["cursor"] if self.state.exists() else None
 
     def save(self, cursor: int) -> None:
-        part = self.state.with_suffix(".part")
-        part.write_text(json.dumps({"cursor": cursor}))
-        part.replace(self.state)
+        write_file(self.state, json.dumps({"cursor": cursor}))
 
     async def run(self) -> None:
         cursor = self.load()

@@ -12,6 +12,7 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
+from .files import write_file
 from .forum import Forum
 from .qq import QQ
 from .sync import Sync
@@ -217,9 +218,7 @@ class Weekly:
         return json.loads(self.state.read_text()) if self.state.exists() else {}
 
     def save(self, week: float, sent: list[int]) -> None:
-        part = self.state.with_suffix(".part")
-        part.write_text(json.dumps({"week": week, "sent": sent}))
-        part.replace(self.state)
+        write_file(self.state, json.dumps({"week": week, "sent": sent}))
 
     async def run(self) -> None:
         while True:

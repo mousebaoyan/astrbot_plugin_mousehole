@@ -1,12 +1,14 @@
 """Threads like a new question (design §8.5): vectors of every thread's title and opening, kept
 here, together with the forum's own literal search."""
 
+import io
 import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import numpy as np
 
+from .files import write_file
 from .forum import Forum
 
 log = logging.getLogger("astrbot.plugin.astrbot_plugin_mousehole")
@@ -77,10 +79,9 @@ class Index:
     def save(self) -> None:
         if self.path is None:
             return
-        part = self.path.with_suffix(".part")
-        with part.open("wb") as f:
-            np.savez(f, ids=self.ids, vectors=self.vectors, model=np.array(self.model))
-        part.replace(self.path)
+        saved = io.BytesIO()
+        np.savez(saved, ids=self.ids, vectors=self.vectors, model=np.array(self.model))
+        write_file(self.path, saved.getvalue())
 
     async def put(self, thread: int, title: str, opening: str) -> None:
         vector = normalized(await self.embed([text_of(title, opening)]))

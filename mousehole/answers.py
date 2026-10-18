@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .files import write_file
 from .forum import Forum
 from .qq import QQ, at, fill
 from .sync import Sync
@@ -93,9 +94,7 @@ class Answers:
                 log.exception("新回答提醒 failed")
 
     def save(self, since: int, told: dict[str, list]) -> None:
-        part = self.state.with_suffix(".part")
-        part.write_text(json.dumps({"since": since, "told": told}))
-        part.replace(self.state)
+        write_file(self.state, json.dumps({"since": since, "told": told}))
 
     async def round(self) -> None:
         now = self.clock()

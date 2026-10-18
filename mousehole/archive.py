@@ -20,6 +20,7 @@ from typing import Any
 import httpx
 
 from . import judge
+from .files import append_line, write_file
 from .forum import Forum, ForumError
 from .llm import Truncated, Unavailable
 from .qq import at, fill, joined
@@ -225,11 +226,7 @@ def content(messages: list[Message], body: str) -> dict:
 
 
 def write(path: Path, records: list[dict]) -> None:
-    part = path.with_suffix(".part")
-    part.write_text(
-        "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records), encoding="utf-8"
-    )
-    part.replace(path)
+    write_file(path, "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in records))
 
 
 @dataclass(eq=False)
@@ -385,8 +382,7 @@ class Archive:
             m.recalled = True
 
     def wait(self, group: int, record: dict) -> None:
-        with (self.pending / f"{group}.jsonl").open("a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        append_line(self.pending / f"{group}.jsonl", json.dumps(record, ensure_ascii=False))
 
     # ---- Batches
 
@@ -436,9 +432,7 @@ class Archive:
         return self.clock() >= last + until(hours, last)
 
     def save_state(self) -> None:
-        part = self.state_file.with_suffix(".part")
-        part.write_text(json.dumps(self.state), encoding="utf-8")
-        part.replace(self.state_file)
+        write_file(self.state_file, json.dumps(self.state))
 
     async def catch_up(self) -> None:
         """Messages the plugin didn't hear, while it or AstrBot was down or cut off from NapCat,
@@ -717,9 +711,7 @@ class Archive:
         self.save_summary()
 
     def save_summary(self) -> None:
-        part = self.summary_file.with_suffix(".part")
-        part.write_text(json.dumps(self.summary, ensure_ascii=False), encoding="utf-8")
-        part.replace(self.summary_file)
+        write_file(self.summary_file, json.dumps(self.summary, ensure_ascii=False))
 
     async def send_summary(self) -> bool:
         """One message in each group that had threads archived since the last (design §8.8).

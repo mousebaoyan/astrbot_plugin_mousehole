@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .files import write_file
 from .forum import Forum
 from .qq import QQ, fill, joined
 from .sync import Sync
@@ -92,6 +93,4 @@ class Bounties:
         if found["items"]:
             for group in self.groups or sorted(self.sync.groups):
                 await self.qq.send_group(group, message(found, self.templates, self.site))
-        part = self.state.with_suffix(".part")
-        part.write_text(json.dumps({"since": now}))
-        part.replace(self.state)
+        write_file(self.state, json.dumps({"since": now}))
