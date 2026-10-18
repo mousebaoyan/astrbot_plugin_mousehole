@@ -9,7 +9,8 @@ ASKER, ANSWERER, OTHER = 10001, 10002, 10003
 
 
 async def suggest_with(llm, *threads_by):
-    """Suggest over a forum with a thread with a reply by each of `threads_by`."""
+    """Suggest over a forum with a thread with a reply by each of `threads_by`, and the fake
+    forum."""
     forum = FakeForum()
     client = forum.client()
     for author in threads_by:
@@ -43,12 +44,12 @@ async def suggest_with(llm, *threads_by):
         templates=defaults("archive"),
         prefixes=["/"],
     )
-    return s, sent
+    return s, sent, forum
 
 
 async def test_a_question_a_thread_answers_gets_it_at_once_and_not_again_soon():
     llm = Script({"answers": [{"question": "Q1", "threads": ["C1"]}]})
-    s, sent = await suggest_with(llm, ANSWERER)
+    s, sent, _ = await suggest_with(llm, ANSWERER)
     s.add(GROUP, message(1, ASKER, "预推免第一批和第二批可以都报吗？"), BOT)
     s.add(GROUP, message(2, OTHER, "哈哈哈哈哈哈"), BOT)
     s.add(GROUP, message(3, BOT, "预推免能报两批吗？"), BOT)
@@ -68,10 +69,36 @@ async def test_a_question_a_thread_answers_gets_it_at_once_and_not_again_soon():
 
 async def test_without_candidates_the_llm_is_not_asked():
     # The asker's own thread is none for them; Script() has nothing to answer with.
-    s, sent = await suggest_with(Script(), ASKER)
+    s, sent, _ = await suggest_with(Script(), ASKER)
     s.add(GROUP, message(1, ASKER, "预推免第一批和第二批可以都报吗？"), BOT)
     await s.round()
     assert sent == []
+
+
+async def test_the_llm_sees_the_question_after_what_was_said_just_before_and_the_floors():
+    llm = Script({"answers": []})
+    s, _, forum = await suggest_with(llm, ANSWERER)
+    forum.threads[1].posts[1].accepted = True
+    # A message's ID is its second: 1 is quoted but long before, 50 only long before.
+    for m in [
+        message(1, OTHER, "预推免报名开始了"),
+        message(50, ANSWERER, "旧的话"),
+        message(400, ANSWERER, "第一批明天截止"),
+        message(401, BOT, "收到"),
+        message(402, ASKER, "我还没报"),
+        message(403, ASKER, "第一批和第二批可以都报吗？", reply=1),
+        message(404, OTHER, "后来的话"),
+    ]:
+        s.add(GROUP, m, BOT)
+    await s.round()
+    [(_, prompt)] = llm.prompts
+    question, thread = prompt.split("\n\n")
+    assert question == (
+        "# Q1\n群友1：预推免报名开始了\n群友2：第一批明天截止\nbot：收到\n提问人：我还没报\n"
+        "提问人 ↩群友1：第一批和第二批可以都报吗？"
+    )
+    assert thread.startswith("C1. 预推免的第一批和第二批能都报吗（保研问答，问答帖，")
+    assert thread.endswith("1 条回复）\n#1（楼主）：预推免能报两批吗\n#2（已采纳）：可以")
 
 
 def test_what_the_llm_picks_is_kept_only_for_questions_and_threads_there_are():

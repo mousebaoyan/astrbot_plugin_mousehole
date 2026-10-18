@@ -61,7 +61,7 @@ class Summaries:
             if e.status != 404:
                 raise
             return
-        posts = judge.summary_floors(source["posts"])
+        posts = judge.floors_within(source["posts"], judge.SUMMARY_FLOOR_CHARS, judge.SUMMARY_CHARS)
         answer, _, _ = await self.complete(
             judge.SUMMARY, judge.summary_prompt(source, posts), judge.SUMMARY_SCHEMA
         )

@@ -105,6 +105,24 @@ def plain(segments: list[dict]) -> str:
     return "".join(s["data"]["text"] for s in segments if s["type"] == "text")
 
 
+def shown_text(m: Message, alias: Callable[[int], str]) -> str:
+    """A message as the models see it: those it @s by `alias`, pictures and the rest as
+    placeholders."""
+    parts = []
+    for s in m.segments:
+        kind, data = s["type"], s["data"]
+        if kind == "text":
+            parts.append(data["text"])
+        elif kind == "at":
+            qq = str(data["qq"])
+            parts.append("@全体成员" if qq == "all" else f"@{alias(int(qq))}")
+        elif kind == "image":
+            parts.append("" if is_sticker(s) else "[图片]")
+        elif kind not in ("face", "mface", "reply"):
+            parts.append(PLACEHOLDERS.get(kind, "[消息]"))
+    return " ".join("".join(parts).split())
+
+
 def unavailable(e: Exception) -> bool:
     """Whether something failed for want of a service rather than for what it held: the segment
     is tried again later, not lost (design §8.2)."""
@@ -583,27 +601,12 @@ class Archive:
 
     # ---- What the models see
 
-    def text(self, chat: Chat, m: Message) -> str:
-        parts = []
-        for s in m.segments:
-            kind, data = s["type"], s["data"]
-            if kind == "text":
-                parts.append(data["text"])
-            elif kind == "at":
-                qq = str(data["qq"])
-                parts.append("@全体成员" if qq == "all" else f"@{chat.alias(int(qq))}")
-            elif kind == "image":
-                parts.append("" if is_sticker(s) else "[图片]")
-            elif kind not in ("face", "mface", "reply"):
-                parts.append(PLACEHOLDERS.get(kind, "[消息]"))
-        return " ".join("".join(parts).split())
-
     def line(self, chat: Chat, m: Message, names: dict[Floor, str]) -> str:
         parts = [f"#{m.number}", chat.alias(m.user)]
         if m.quoted is not None:
             target = chat.by_id.get(m.quoted)
             parts.append(f"↩#{target.number}" if target else "↩更早的消息")
-        parts.append(self.text(chat, m))
+        parts.append(shown_text(m, chat.alias))
         if m.floor is not None:
             parts.append(f"〔已收：{names[m.floor]}〕" if m.floor in names else "〔已收〕")
         elif m.reacted is not None:

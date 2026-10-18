@@ -29,6 +29,7 @@ class Post:
     sources: list[int] = field(default_factory=list)
     edited_at: int | None = None
     deleted: bool = False
+    accepted: bool = False
     # Earlier bodies, oldest first.
     revisions: list[str] = field(default_factory=list)
     # By whom: their emoji, their boost.
@@ -127,6 +128,32 @@ class FakeForum:
             "excerpt": re.sub(r"!\[\]\([^)]*\)", "", opening)[:100],
         }
 
+    def source_json(self, t: Thread) -> dict:
+        board = next(b for b in self.boards if b["slug"] == t.board)
+        posts = [
+            {
+                "floor": p.floor,
+                "op": p.author == t.author,
+                "accepted": p.accepted,
+                "likes": sum(emoji == "heart" for emoji in p.reactions.values()),
+                "text": re.sub(r"!\[\]\([^)]*\)", "[图片]", p.body),
+            }
+            for p in t.posts
+            if not p.deleted
+        ]
+        return {
+            "thread": {
+                "id": t.id,
+                "kind": t.kind,
+                "title": t.title,
+                "board": board["name"],
+                "tags": t.tags,
+                "positioning": False,
+            },
+            "replies": len(posts) - 1,
+            "posts": posts,
+        }
+
     # ---- Requests
 
     def handle(self, request: httpx.Request) -> httpx.Response:
@@ -171,6 +198,9 @@ class FakeForum:
             case "GET", ["threads", thread]:
                 t = self.threads.get(int(thread))
                 return ok(self.thread_json(t)) if t and not t.deleted else error(404, "not_found")
+            case "GET", ["bot", "summaries", thread, "source"]:
+                t = self.threads.get(int(thread))
+                return ok(self.source_json(t)) if t and not t.deleted else error(404, "not_found")
             case "PATCH", ["threads", thread]:
                 t = self.threads[int(thread)]
                 opening = t.posts[0]

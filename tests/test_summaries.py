@@ -94,7 +94,7 @@ def test_past_the_budget_the_opening_post_accepted_and_most_liked_floors_are_kep
         }
 
     posts = [post(1), *(post(f) for f in range(2, 60)), post(60, likes=9), post(61, accepted=True)]
-    kept = judge.summary_floors(posts)
+    kept = judge.floors_within(posts, judge.SUMMARY_FLOOR_CHARS, judge.SUMMARY_CHARS)
     assert sum(len(p["text"]) for p in kept) <= judge.SUMMARY_CHARS
     assert all(len(p["text"]) == judge.SUMMARY_FLOOR_CHARS for p in kept)
     assert kept[0]["floor"] == 1

@@ -279,13 +279,19 @@ def duplicate_prompt(title: str, body: str, candidates: list[dict]) -> str:
 # ---- 猜你想问 (design §8.11)
 
 SUGGEST_THREADS = 3
+# Of each candidate's floors: as of a thread summarized, but fewer, for a round may have a few
+# questions with a few candidates each.
+SUGGEST_FLOOR_CHARS = 500
+SUGGEST_CHARS = 3000
 
-SUGGEST = f"""你在帮一个保研交流 QQ 群。群友在群里提了问题，每个问题下面列着论坛上可能相关的帖子。判断哪些帖子能直接回答这个问题，bot 会把它们推给提问的人。
+SUGGEST = f"""你在帮一个保研交流 QQ 群。群友在群里提了问题，bot 想把论坛上以前有人问过、也有人答过的帖子推给提问的人。
 
-- 能回答：帖子问的是同一件事，或者帖子里的回答正好回答了这个问题。说法不同没关系。
+每个问题先列出群里提问前的几条消息，最后一条是提问，"↩群友1"表示回复的是群友1的消息；下面是论坛上找到的、可能相关的帖子和它们的楼层，标出了楼主、被采纳的回答和赞数。判断哪些帖子能回答这个问题。
+
+- 能回答：帖子问的是同一件事，说法不同没关系；而且楼层里有人给出了答案，不是只有闲聊、反问、跟着问或者"不知道"。
 - 不能：只是话题相近；问的是自己的具体情况（比如"我这个条件能去哪"），帖子说的是别人的；问的是今年的事，帖子说的是往年的。
-- 这条消息不是在提问（反问、玩笑、吐槽），或者离开前文就看不懂的，哪个帖子都不选。
-- 拿不准时当作不能。每个问题最多选 {SUGGEST_THREADS} 个，能回答得最好的在前。
+- 结合前面的消息看：其实不是在提问（反问、玩笑、吐槽、接话），或者问的是前文里具体的人和事、帖子没有说到的，哪个帖子都不选。
+- 拿不准时当作不能。每个问题最多选 {SUGGEST_THREADS} 个，有被采纳的回答的优先，再按回答得好坏排。
 
 只输出一个 JSON 对象：{{"answers": [{{"question": "Q1", "threads": ["C2"]}}]}}，没有能回答的就是 {{"answers": []}}。"""
 
@@ -313,17 +319,18 @@ SUGGEST_SCHEMA = {
 }
 
 
-def suggest_prompt(asked: list[tuple[str, list[dict]]]) -> str:
-    """Each question asked, with the threads found for it."""
+def suggest_prompt(asked: list[tuple[list[str], list[dict]]]) -> str:
+    """Each question, after the messages before it, with the threads found for it: what the
+    forum gives to summarize one (`source`), and the floors of it shown (`posts`)."""
     parts = []
-    for i, (text, threads) in enumerate(asked, 1):
-        lines = [f"# Q{i}\n{text}"]
+    for i, (lines, threads) in enumerate(asked, 1):
+        blocks = [f"# Q{i}\n" + "\n".join(lines)]
         for j, t in enumerate(threads, 1):
-            lines.append(
-                f"C{j}. {t['title']}（{t['board']['name']}，{t['created']}，"
-                f"{t['reply_count']} 条回复）\n{t['excerpt']}"
-            )
-        parts.append("\n\n".join(lines))
+            s = t["source"]["thread"]
+            head = f"C{j}. {s['title']}（{s['board']}，{kind_of(s)}，{t['created']}，"
+            head += f"{t['source']['replies']} 条回复）"
+            blocks.append("\n".join([head, *(floor_line(p) for p in t["posts"])]))
+        parts.append("\n\n".join(blocks))
     return "\n\n".join(parts)
 
 
@@ -689,36 +696,39 @@ SUMMARY_SCHEMA = {
 }
 
 
-def summary_floors(posts: list[dict]) -> list[dict]:
-    """The floors given, each cut short; past the budget, the opening post, the accepted and the
-    most liked are kept, back in their order."""
-    posts = [p | {"text": p["text"][:SUMMARY_FLOOR_CHARS]} for p in posts]
-    if sum(len(p["text"]) for p in posts) <= SUMMARY_CHARS:
+def floors_within(posts: list[dict], floor_chars: int, total_chars: int) -> list[dict]:
+    """The floors of a thread's source, each cut to `floor_chars`; past `total_chars` in all, the
+    opening post, the accepted and the most liked are kept, back in their order."""
+    posts = [p | {"text": p["text"][:floor_chars]} for p in posts]
+    if sum(len(p["text"]) for p in posts) <= total_chars:
         return posts
     kept, total = set(), 0
     for p in sorted(posts, key=lambda p: (p["floor"] > 1, not p["accepted"], -p["likes"])):
-        if total + len(p["text"]) <= SUMMARY_CHARS:
+        if total + len(p["text"]) <= total_chars:
             kept.add(p["floor"])
             total += len(p["text"])
     return [p for p in posts if p["floor"] in kept]
 
 
+def kind_of(thread: dict) -> str:
+    return "保研定位帖" if thread["positioning"] else KINDS[thread["kind"]]
+
+
+def floor_line(post: dict) -> str:
+    notes = (["楼主"] if post["op"] else []) + (["已采纳"] if post["accepted"] else [])
+    if post["likes"]:
+        notes.append(f"{post['likes']} 个赞")
+    note = f"（{'，'.join(notes)}）" if notes else ""
+    return f"#{post['floor']}{note}：{post['text']}"
+
+
 def summary_prompt(source: dict, posts: list[dict]) -> str:
     t = source["thread"]
-    head = [
-        f"版块：{t['board']}",
-        f"类型：{'保研定位帖' if t['positioning'] else KINDS[t['kind']]}",
-    ]
+    head = [f"版块：{t['board']}", f"类型：{kind_of(t)}"]
     if t["tags"]:
         head.append(f"标签：{'、'.join(t['tags'])}")
     head.append(f"标题：{t['title']}")
-    lines = []
-    for p in posts:
-        notes = (["楼主"] if p["op"] else []) + (["已采纳"] if p["accepted"] else [])
-        if p["likes"]:
-            notes.append(f"{p['likes']} 个赞")
-        note = f"（{'，'.join(notes)}）" if notes else ""
-        lines.append(f"#{p['floor']}{note}：{p['text']}")
+    lines = [floor_line(p) for p in posts]
     return "# 帖子\n" + "\n".join(head) + "\n\n# 楼层\n" + "\n".join(lines)
 
 

@@ -7,12 +7,12 @@ import asyncio
 import logging
 import re
 import time
-from collections import Counter
+from collections import Counter, deque
 from collections.abc import Callable
 from datetime import datetime
 
 from . import judge
-from .archive import ROUND, Complete, Message, Notify, plain
+from .archive import ROUND, Complete, Message, Notify, plain, shown_text, shows
 from .forum import Forum, ForumError
 from .qq import fill, joined
 from .similar import Index
@@ -35,6 +35,12 @@ OF_SOMEONE = re.compile("你(?!们)")
 SIMILARITY = 0.7
 NEAREST = 10
 CANDIDATES = 3
+# A question goes to the LLM after the BEFORE messages that say anything, said at most
+# BEFORE_SECONDS before it, and the one it quotes among the KEPT last of the group: whether it
+# asks anything, and what, shows there.
+BEFORE = 5
+BEFORE_SECONDS = 300
+KEPT = 100
 # Replies a group gets a round at most, so that the bot doesn't flood it.
 REPLIES_A_ROUND = 2
 # Seconds before a thread is told to a group again.
@@ -70,17 +76,21 @@ class Suggest:
         self.templates = templates
         self.prefixes = tuple(p for p in prefixes if p)
         self.clock = clock
-        # Questions asked since the last round, by group.
-        self.waiting: dict[int, list[Message]] = {}
+        # Questions asked since the last round, by group, each as the LLM is shown it.
+        self.waiting: dict[int, list[tuple[Message, list[str]]]] = {}
+        # The latest messages of each group.
+        self.recent: dict[int, deque[Message]] = {}
         # When each (group, thread) was told last.
         self.told: dict[tuple[int, int], float] = {}
         # Forum user ID by QQ number; None for those the forum doesn't know.
         self.users: dict[int, int | None] = {}
 
     def add(self, group: int, m: Message, bot: int) -> None:
+        recent = self.recent.setdefault(group, deque(maxlen=KEPT))
         text = text_of(m)
         if m.user != bot and not (self.prefixes and text.startswith(self.prefixes)) and asks(text):
-            self.waiting.setdefault(group, []).append(m)
+            self.waiting.setdefault(group, []).append((m, lines_of(m, recent, bot)))
+        recent.append(m)
 
     async def run(self) -> None:
         while True:
@@ -96,27 +106,27 @@ class Suggest:
         now = self.clock()
         self.told = {k: t for k, t in self.told.items() if now - t < AGAIN_AFTER}
         asked = []
-        for group, messages in waiting.items():
-            for m in messages:
+        for group, questions in waiting.items():
+            for m, lines in questions:
                 if found := await self.threads_for(group, m):
-                    asked.append((group, m, found))
+                    asked.append((group, m, lines, found))
         told, tokens = await self.tell(asked, now) if asked else (0, 0)
         if waiting:
             # In numbers only: the questions are the members' words.
             log.info(
                 "猜你想问: %d questions, %d with threads, %d told, %d tokens",
-                sum(len(messages) for messages in waiting.values()),
+                sum(len(questions) for questions in waiting.values()),
                 len(asked),
                 told,
                 tokens,
             )
 
     async def tell(
-        self, asked: list[tuple[int, Message, list[dict]]], now: float
+        self, asked: list[tuple[int, Message, list[str], list[dict]]], now: float
     ) -> tuple[int, int]:
         """The questions the LLM finds threads answer get them; how many did, and the tokens
         the LLM took."""
-        prompt = judge.suggest_prompt([(text_of(m), found) for _, m, found in asked])
+        prompt = judge.suggest_prompt([(lines, found) for _, _, lines, found in asked])
         answer, input_tokens, output_tokens = await self.complete(
             judge.SUGGEST, prompt, judge.SUGGEST_SCHEMA
         )
@@ -126,9 +136,9 @@ class Suggest:
         except ValueError:
             log.warning("The LLM's answer for 猜你想问 is not JSON")
             return 0, tokens
-        picked = judge.suggestions(raw, [len(found) for _, _, found in asked])
+        picked = judge.suggestions(raw, [len(found) for _, _, _, found in asked])
         replies: Counter[int] = Counter()
-        for i, (group, m, found) in enumerate(asked):
+        for i, (group, m, _, found) in enumerate(asked):
             threads = [
                 found[t] for t in picked.get(i, []) if (group, found[t]["id"]) not in self.told
             ]
@@ -142,7 +152,7 @@ class Suggest:
 
     async def threads_for(self, group: int, m: Message) -> list[dict]:
         """The threads that may answer it, the most alike first: with replies, not the asker's
-        own, not told lately."""
+        own, not told lately; with their floors, as the forum gives them to summarize."""
         asker = await self.user(m.user)
         found: list[dict] = []
         for thread in await self.index.nearest(text_of(m), NEAREST, SIMILARITY):
@@ -150,15 +160,28 @@ class Suggest:
                 continue
             try:
                 t = await self.forum.call("GET", f"/threads/{thread}")
+                if not t["reply_count"] or t["author"].get("id") == asker:
+                    continue
+                source = await self.forum.call("GET", f"/bot/summaries/{thread}/source")
             except ForumError as e:
+                # Gone; or a moderator turned off its AI summary, which takes the source too.
                 if e.status != 404:
                     raise
                 continue
-            if t["reply_count"] and t["author"].get("id") != asker:
-                t["created"] = datetime.fromtimestamp(t["created_at"]).strftime("%Y-%m-%d")
-                found.append(t)
-                if len(found) == CANDIDATES:
-                    break
+            posts = judge.floors_within(
+                source["posts"], judge.SUGGEST_FLOOR_CHARS, judge.SUGGEST_CHARS
+            )
+            found.append(
+                {
+                    "id": thread,
+                    "title": t["title"],
+                    "created": datetime.fromtimestamp(t["created_at"]).strftime("%Y-%m-%d"),
+                    "source": source,
+                    "posts": posts,
+                }
+            )
+            if len(found) == CANDIDATES:
+                break
         return found
 
     async def user(self, qq: int) -> int | None:
@@ -174,6 +197,30 @@ class Suggest:
 
 def text_of(m: Message) -> str:
     return " ".join(plain(m.segments).split())
+
+
+def lines_of(m: Message, recent: deque[Message], bot: int) -> list[str]:
+    """The question as the LLM is shown it: last, after the messages said shortly before it and
+    the one it quotes; the asker, the bot and the others by aliases, as the models never see QQ
+    numbers or names."""
+    said = [r for r in recent if any(shows(s) for s in r.segments)]
+    before = [r for r in said if m.time - r.time <= BEFORE_SECONDS][-BEFORE:]
+    by_id = {r.id: r for r in recent}
+    quoted = by_id.get(m.quoted) if m.quoted is not None else None
+    shown = ([quoted] if quoted is not None and quoted not in before else []) + before + [m]
+    names = {m.user: "提问人", bot: "bot"}
+
+    def name(user: int) -> str:
+        return names.setdefault(user, f"群友{len(names) - 1}")
+
+    lines = []
+    for r in shown:
+        to = ""
+        if r.quoted is not None:
+            target = by_id.get(r.quoted)
+            to = f" ↩{name(target.user)}" if target else " ↩更早的消息"
+        lines.append(f"{name(r.user)}{to}：{shown_text(r, name)}")
+    return lines
 
 
 def suggestion(m: Message, threads: list[dict], site: str, templates: dict[str, str]) -> list[dict]:
