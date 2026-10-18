@@ -347,7 +347,9 @@ class FakeForum:
         if conflict := self.taken(body["source"], None):
             return conflict
         reply_to = body.get("reply_to_id")
-        if reply_to is not None and self.posts[reply_to].thread != t.id:
+        if reply_to is not None and (
+            self.posts[reply_to].thread != t.id or self.posts[reply_to].deleted
+        ):
             return error(400, "invalid_request")
         p = Post(
             self.next_id(),

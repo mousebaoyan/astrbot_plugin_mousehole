@@ -1004,20 +1004,29 @@ class Archive:
             "source": self.source(chat, messages),
             "created_at": max(int(messages[0].time), self.latest.get(thread, 0)),
         }
-        if reply_to is not None:
-            payload["reply_to_id"] = reply_to.post
-        try:
-            post = await self.forum.call(
-                "POST",
-                f"/threads/{thread}/posts",
-                body=payload,
-                act_as=author,
-                key=f"qq-{chat.group}-{messages[0].id}-post",
-            )
-        except ForumError as e:
-            if e.code != "source_exists":
-                raise
-            post = await self.forum.call("GET", f"/posts/{e.details['post_id']}")
+
+        async def send(payload: dict, key: str) -> dict:
+            try:
+                return await self.forum.call(
+                    "POST", f"/threads/{thread}/posts", body=payload, act_as=author, key=key
+                )
+            except ForumError as e:
+                if e.code != "source_exists":
+                    raise
+                return await self.forum.call("GET", f"/posts/{e.details['post_id']}")
+
+        key = f"qq-{chat.group}-{messages[0].id}-post"
+        if reply_to is None:
+            post = await send(payload, key)
+        else:
+            try:
+                post = await send(payload | {"reply_to_id": reply_to.post}, key)
+            except ForumError as e:
+                # The floor it answers may be gone from the forum by now: the answer is kept,
+                # without the link. Under a key of its own, as the forum keeps the first's answer.
+                if e.status != 400:
+                    raise
+                post = await send(payload, f"{key}-alone")
         return self.settle(q, post, author, messages, body)
 
     async def react(self, chat: Chat, floor: Floor, item: judge.Reaction) -> bool:

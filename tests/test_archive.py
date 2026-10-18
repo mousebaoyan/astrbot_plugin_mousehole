@@ -256,6 +256,15 @@ async def test_a_reply_naming_a_floor_of_another_thread_is_posted_without_quotin
     assert [(p.author, p.reply_to) for p in newer.posts] == [(OTHER, None), (ANSWERER, None)]
 
 
+async def test_a_reply_to_a_floor_deleted_on_the_forum_is_posted_without_quoting_it(setup):
+    answer = {**ANSWER, "question": "Q1", "messages": [4], "reply_to": "A1"}
+    s = await asked(setup, {"new": [answer], "edit": []})
+    thread_of(s).posts[1].deleted = True
+    report = await s.batch(message(4, OTHER, "第二批名额少很多", reply=3))
+    assert [(p.author, p.reply_to) for p in thread_of(s).posts[2:]] == [(OTHER, None)]
+    assert report["dropped"] == []
+
+
 async def thread_asked_at(s, time: int) -> int:
     older = await s.forum.client().call(
         "POST",
