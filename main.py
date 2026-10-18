@@ -17,6 +17,7 @@ from .mousehole.login import login, wants_login
 from .mousehole.qq import QQ, fill
 from .mousehole.similar import Index
 from .mousehole.suggest import Suggest
+from .mousehole.summaries import Summaries
 from .mousehole.sync import Sync
 from .mousehole.weekly import Weekly
 from .mousehole.welcome import Welcome
@@ -36,6 +37,7 @@ class Mousehole(Star):
         self.embedder: Embedder | None = None
         self.archive: Archive | None = None
         self.suggest: Suggest | None = None
+        self.summaries: Summaries | None = None
         self.tasks: list[asyncio.Task] = []
 
     async def initialize(self) -> None:
@@ -87,6 +89,11 @@ class Mousehole(Star):
                     templates=c["archive"],
                     prefixes=self.context.get_config()["wake_prefix"],
                 )
+        if c["summary"]["enabled"] and not (m["base_url"] and m["model"]):
+            logger.error("鼠洞插件：AI 总结要填好大模型的地址和模型，现在不写总结")
+        elif c["summary"]["enabled"]:
+            self.llm = self.llm or LLM(Settings.of(m))
+            self.summaries = Summaries(self.forum, self.llm.complete)
         lottery = c["lottery"]
         self.events = Events(
             self.forum,
@@ -165,6 +172,8 @@ class Mousehole(Star):
             self.tasks.append(asyncio.create_task(self.archive.run()))
         if self.suggest:
             self.tasks.append(asyncio.create_task(self.suggest.run()))
+        if self.summaries:
+            self.tasks.append(asyncio.create_task(self.summaries.run()))
         if self.weekly:
             self.tasks.append(asyncio.create_task(self.weekly.run()))
         if self.answers:

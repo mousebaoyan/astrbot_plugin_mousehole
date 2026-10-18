@@ -287,8 +287,20 @@
       }
     }
   },
+  "summary": {
+    "description": "AI 总结",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "给论坛上回复多的帖子写 AI 总结",
+        "type": "bool",
+        "default": true,
+        "hint": "论坛后台的站点页打开「AI 总结」后才开始写：每 30 分钟问论坛一次该写哪些，一轮最多 5 个。和自动收录用同一个大模型、同一份每天的 token 上限，要填好下面的大模型。"
+      }
+    }
+  },
   "llm": {
-    "description": "大模型（自动收录的整理）",
+    "description": "大模型（自动收录的整理和 AI 总结）",
     "type": "object",
     "items": {
       "base_url": {
@@ -370,7 +382,7 @@
         "description": "每天最多用多少 token",
         "type": "int",
         "default": 1000000,
-        "hint": "输入和输出合计。用完后收录停下，第二天接着收。0 不限。ECNU 每 7 天 2 万积分，ecnu-plus 输入每百万 token 100 积分、输出 400 积分，8–18 点翻倍。"
+        "hint": "收录和 AI 总结共用，输入和输出合计。用完后都停下，第二天接着。0 不限。ECNU 每 7 天 2 万积分，ecnu-plus 输入每百万 token 100 积分、输出 400 积分，8–18 点翻倍。"
       }
     }
   },

@@ -1,5 +1,5 @@
-"""What auto-archiving asks the LLM (design §8.2, §8.3, §8.5) and the checks on what it
-answers."""
+"""What the plugin asks the LLM, for auto-archiving (design §8.2, §8.3, §8.5), 猜你想问 (§8.11)
+and AI summaries (§8.12), and the checks on what it answers."""
 
 from __future__ import annotations
 
@@ -637,3 +637,106 @@ def check(
                 item.messages = sorted(item.messages + [m], key=lambda m: m.number)
                 taken.add(m.number)
     return plan
+
+
+# ---- AI 总结 (design §8.12)
+
+# Characters of each floor given, and of all of them: past that, the opening post, the accepted
+# answers and the most liked go first.
+SUMMARY_FLOOR_CHARS = 500
+SUMMARY_CHARS = 20_000
+# What the forum takes: a lead and points this long, this many points, of floors each.
+LEAD_CHARS = 80
+POINT_CHARS = 80
+POINTS = 5
+POINT_FLOORS = 5
+KINDS = {"question": "问答帖", "discussion": "讨论帖", "poll": "投票帖"}
+
+SUMMARY = """你在帮一个保研交流 QQ 群的论坛给帖子写总结。总结显示在帖子标题下面，读帖的人不用翻完全部楼层，就知道这个帖子讲了什么、哪几层值得看。
+
+- lead：一句话说清讨论的是什么，不超过 50 个字。问答帖写"问的是……"，保研定位帖写楼主的背景和想去的学校，讨论帖写在聊什么。
+- points：2–5 条要点，每条不超过 60 个字，重要的在前；floors 是这条出自哪几层的楼层号。
+  - 问答帖：结论是什么，哪些回答值得看、各说了什么；回答之间有分歧时写出来。被采纳的和赞多的回答优先。
+  - 保研定位帖：大家对每所目标学校的看法。
+  - 讨论帖：主要观点和有用的信息。
+- 只写帖子里有的内容，不编造，不加自己的评价和建议。没有实质内容的楼层（感谢、附和、表情）不写。
+- 不写名字，称呼用"楼主""有人""几位回答的人"。
+
+只输出一个 JSON 对象：{"lead": "问的是……", "points": [{"text": "……", "floors": [2, 5]}]}"""
+
+SUMMARY_SCHEMA = {
+    "name": "summary",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "lead": {"type": "string"},
+            "points": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string"},
+                        "floors": {"type": "array", "items": {"type": "integer"}},
+                    },
+                    "required": ["text", "floors"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["lead", "points"],
+        "additionalProperties": False,
+    },
+}
+
+
+def summary_floors(posts: list[dict]) -> list[dict]:
+    """The floors given, each cut short; past the budget, the opening post, the accepted and the
+    most liked are kept, back in their order."""
+    posts = [p | {"text": p["text"][:SUMMARY_FLOOR_CHARS]} for p in posts]
+    if sum(len(p["text"]) for p in posts) <= SUMMARY_CHARS:
+        return posts
+    kept, total = set(), 0
+    for p in sorted(posts, key=lambda p: (p["floor"] > 1, not p["accepted"], -p["likes"])):
+        if total + len(p["text"]) <= SUMMARY_CHARS:
+            kept.add(p["floor"])
+            total += len(p["text"])
+    return [p for p in posts if p["floor"] in kept]
+
+
+def summary_prompt(source: dict, posts: list[dict]) -> str:
+    t = source["thread"]
+    head = [
+        f"版块：{t['board']}",
+        f"类型：{'保研定位帖' if t['positioning'] else KINDS[t['kind']]}",
+    ]
+    if t["tags"]:
+        head.append(f"标签：{'、'.join(t['tags'])}")
+    head.append(f"标题：{t['title']}")
+    lines = []
+    for p in posts:
+        notes = (["楼主"] if p["op"] else []) + (["已采纳"] if p["accepted"] else [])
+        if p["likes"]:
+            notes.append(f"{p['likes']} 个赞")
+        note = f"（{'，'.join(notes)}）" if notes else ""
+        lines.append(f"#{p['floor']}{note}：{p['text']}")
+    return "# 帖子\n" + "\n".join(head) + "\n\n# 楼层\n" + "\n".join(lines)
+
+
+def summary_of(raw: Any, floors: set[int]) -> dict | None:
+    """What the forum takes of the LLM's summary: floors there are, points with some, all cut to
+    length; None when no point is left."""
+    if not isinstance(raw, dict) or not isinstance(raw.get("lead"), str) or not raw["lead"].strip():
+        return None
+    points = []
+    for item in raw.get("points") if isinstance(raw.get("points"), list) else []:
+        if not isinstance(item, dict) or not isinstance(item.get("text"), str):
+            continue
+        cited = item.get("floors") if isinstance(item.get("floors"), list) else []
+        kept = list(dict.fromkeys(f for f in cited if isinstance(f, int) and f in floors))
+        if item["text"].strip() and kept:
+            points.append(
+                {"text": item["text"].strip()[:POINT_CHARS], "floors": kept[:POINT_FLOORS]}
+            )
+    if not points:
+        return None
+    return {"lead": raw["lead"].strip()[:LEAD_CHARS], "points": points[:POINTS]}
