@@ -572,12 +572,10 @@ def check(
                 plan.dropped.append(f"{what}: unknown question {question}")
                 continue
             reply_to = item.get("reply_to")
-            if reply_to == question and question in asked:
-                # Its own new thread named for what it replies to: the opening post.
+            if reply_to not in floors and reply_to not in answered:
+                # Its own new thread, which is to reply to the opening post, or a floor named
+                # wrong, as the LLM now and then does: the answer is kept, only not linked.
                 reply_to = None
-            if reply_to is not None and reply_to not in floors and reply_to not in answered:
-                plan.dropped.append(f"{what}: unknown reply_to {reply_to}")
-                continue
             body = body_of(item, what)
             messages = messages_of(item, what) if body else None
             if messages is None:
