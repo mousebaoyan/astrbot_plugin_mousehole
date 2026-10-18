@@ -29,9 +29,11 @@ MIN_CHARS = 6
 OF_SOMEONE = re.compile("你(?!们)")
 # Candidates for a question, by meaning alone: the literal search would bring in most of the
 # chatter. Of the threads this alike, the NEAREST are looked at in turn for the first CANDIDATES
-# that may answer it. On 802 questions of 10-16 to 10-18 against 962 threads with replies, 0.65
-# let through 50 a day, those below 0.7 nearly all chatter; 0.7 let through 22, with nearly all
-# that a thread answers.
+# that may answer it. On 1415 questions of five days against 992 threads with replies, 41 of them
+# answered by one: 0.7 finds 19 of those, with 23 questions a day going to the LLM; 0.64 finds 31,
+# with 70 a day, but on those from 0.64 to 0.7 the LLM was wrong 11 times and right 5. Searching by
+# title alone, with more of the opening or the first reply, with the messages before the question,
+# or with thresholds relative to the question found no more for as many calls.
 SIMILARITY = 0.7
 NEAREST = 10
 CANDIDATES = 3
