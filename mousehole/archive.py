@@ -237,8 +237,12 @@ def load(path: Path) -> list[Message]:
 
 def content(messages: list[Message], body: str) -> dict:
     """The organized Markdown with the pictures in the messages, copied to the forum already:
-    where it kept the [图片] the LLM was shown for them, and the rest after it."""
-    pictures = iter([f"![]({u})" for m in messages for u in m.uploads])
+    where it kept the [图片] the LLM was shown for them, and the rest after it. Those that
+    couldn't be copied show as the forum shows a picture gone, so a floor of only them is still
+    posted, and the floors that answer it with it."""
+    copied = [f"![]({u})" for m in messages for u in m.uploads]
+    shown = sum(s["type"] == "image" and not is_sticker(s) for m in messages for s in m.segments)
+    pictures = iter(copied + ["[图片已失效]"] * (shown - len(copied)))
     body = re.sub(r"\[图片\]", lambda _: next(pictures, ""), body)
     return {"markdown": "\n\n".join([body, *pictures])}
 

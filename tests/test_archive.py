@@ -584,6 +584,14 @@ def test_pictures_go_where_the_body_kept_them():
     )
 
 
+def test_a_picture_that_could_not_be_copied_shows_as_gone():
+    picture = {"type": "image", "data": {"sub_type": 0}}
+    gone = Message(1, ASKER, 0, [picture])
+    assert content([gone], "[图片]") == {"markdown": "[图片已失效]"}
+    half = Message(2, ASKER, 0, [picture, picture], uploads=["/uploads/a.webp"])
+    assert content([half], "[图片]和[图片]") == {"markdown": "![](/uploads/a.webp)和[图片已失效]"}
+
+
 async def test_replies_are_posted_in_the_order_they_were_said(setup):
     later = {**ANSWER, "ref": "N3", "messages": [4], "body": "我也想知道"}
     s = setup(Script({"new": [QUESTION, later, ANSWER], "edit": []}))
