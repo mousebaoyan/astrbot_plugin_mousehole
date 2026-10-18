@@ -7,12 +7,12 @@ import asyncio
 import logging
 import re
 import time
-from collections import Counter, deque
-from collections.abc import Callable
+from collections import deque
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 
 from . import judge
-from .archive import ROUND, Complete, Message, Notify, plain, shown_text, shows
+from .archive import Complete, Message, Notify, plain, shown_text, shows
 from .forum import Forum, ForumError
 from .qq import fill, joined
 from .similar import Index
@@ -41,8 +41,12 @@ CANDIDATES = 3
 BEFORE = 5
 BEFORE_SECONDS = 300
 KEPT = 100
-# Replies a group gets a round at most, so that the bot doesn't flood it.
-REPLIES_A_ROUND = 2
+# Seconds from a question to the round that looks at it, and at those asked meanwhile: the asker
+# is still there, and the bot doesn't answer the instant they ask.
+DELAY = 60
+# Replies a group gets in any WINDOW seconds at most, so that the bot doesn't flood it.
+REPLIES = 2
+WINDOW = 600
 # Seconds before a thread is told to a group again.
 AGAIN_AFTER = 6 * 3600
 
@@ -67,6 +71,7 @@ class Suggest:
         templates: dict[str, str],
         prefixes: list[str],
         clock: Callable[[], float] = time.time,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ):
         self.forum = forum
         self.complete = complete
@@ -76,12 +81,17 @@ class Suggest:
         self.templates = templates
         self.prefixes = tuple(p for p in prefixes if p)
         self.clock = clock
+        self.sleep = sleep
+        # Set by a question, for a round DELAY after it.
+        self.asked = asyncio.Event()
         # Questions asked since the last round, by group, each as the LLM is shown it.
         self.waiting: dict[int, list[tuple[Message, list[str]]]] = {}
         # The latest messages of each group.
         self.recent: dict[int, deque[Message]] = {}
         # When each (group, thread) was told last.
         self.told: dict[tuple[int, int], float] = {}
+        # When each group was replied to within the last WINDOW.
+        self.replied: dict[int, list[float]] = {}
         # Forum user ID by QQ number; None for those the forum doesn't know.
         self.users: dict[int, int | None] = {}
 
@@ -90,11 +100,14 @@ class Suggest:
         text = text_of(m)
         if m.user != bot and not (self.prefixes and text.startswith(self.prefixes)) and asks(text):
             self.waiting.setdefault(group, []).append((m, lines_of(m, recent, bot)))
+            self.asked.set()
         recent.append(m)
 
     async def run(self) -> None:
         while True:
-            await asyncio.sleep(ROUND)
+            await self.asked.wait()
+            await self.sleep(DELAY)
+            self.asked.clear()
             try:
                 await self.round()
             except Exception:
@@ -105,6 +118,7 @@ class Suggest:
         waiting, self.waiting = self.waiting, {}
         now = self.clock()
         self.told = {k: t for k, t in self.told.items() if now - t < AGAIN_AFTER}
+        self.replied = {g: [t for t in ts if now - t < WINDOW] for g, ts in self.replied.items()}
         asked = []
         for group, questions in waiting.items():
             for m, lines in questions:
@@ -137,18 +151,20 @@ class Suggest:
             log.warning("The LLM's answer for 猜你想问 is not JSON")
             return 0, tokens
         picked = judge.suggestions(raw, [len(found) for _, _, _, found in asked])
-        replies: Counter[int] = Counter()
+        told = 0
         for i, (group, m, _, found) in enumerate(asked):
             threads = [
                 found[t] for t in picked.get(i, []) if (group, found[t]["id"]) not in self.told
             ]
-            if not threads or replies[group] == REPLIES_A_ROUND:
+            replied = self.replied.setdefault(group, [])
+            if not threads or len(replied) == REPLIES:
                 continue
             await self.notify(group, suggestion(m, threads, self.site, self.templates))
-            replies[group] += 1
+            replied.append(now)
+            told += 1
             for t in threads:
                 self.told[group, t["id"]] = now
-        return replies.total(), tokens
+        return told, tokens
 
     async def threads_for(self, group: int, m: Message) -> list[dict]:
         """The threads that may answer it, the most alike first: with replies, not the asker's

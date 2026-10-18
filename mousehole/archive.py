@@ -62,7 +62,7 @@ class Tuning:
 ORGANIZE_BEFORE = 20
 # Messages kept per group before the segment worked on, for context and quotes.
 KEPT = 1000
-# Seconds between looks at the messages waiting, and between rounds of 猜你想问.
+# Seconds between looks at the messages waiting.
 ROUND = 600
 # A group's waiting messages are taken in once it has been QUIET for that many seconds, if
 # LEAST of them wait or the first has waited LONGEST: a few don't make a call of their own. At

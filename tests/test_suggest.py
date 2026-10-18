@@ -1,6 +1,8 @@
+import asyncio
+
 from conftest import BOT, GROUP, Script, defaults, embed, message
 
-from mousehole import judge
+from mousehole import judge, suggest
 from mousehole.similar import Index
 from mousehole.suggest import Suggest
 from tools.fake_forum import FakeForum
@@ -65,6 +67,41 @@ async def test_a_question_a_thread_answers_gets_it_at_once_and_not_again_soon():
     s.add(GROUP, message(4, OTHER, "预推免两批能一起报吗？"), BOT)
     await s.round()
     assert len(sent) == 1
+
+
+async def test_a_question_brings_a_round_a_minute_later():
+    llm = Script({"answers": [{"question": "Q1", "threads": ["C1"]}]})
+    s, sent, _ = await suggest_with(llm, ANSWERER)
+    waited = []
+
+    async def sleep(seconds):
+        waited.append(seconds)
+
+    s.sleep = sleep
+    task = asyncio.create_task(s.run())
+    await asyncio.sleep(0)
+    s.add(GROUP, message(1, OTHER, "哈哈哈哈哈哈"), BOT)
+    await asyncio.sleep(0)
+    assert waited == []
+    s.add(GROUP, message(2, ASKER, "预推免第一批和第二批可以都报吗？"), BOT)
+    async with asyncio.timeout(1):
+        while not sent:
+            await asyncio.sleep(0)
+    task.cancel()
+    assert waited == [suggest.DELAY]
+
+
+async def test_a_group_gets_two_replies_in_any_ten_minutes_at_most():
+    answer = {"answers": [{"question": "Q1", "threads": ["C1"]}]}
+    s, sent, _ = await suggest_with(Script(*[answer] * 4), ANSWERER, OTHER, 10004, 10005)
+    now = 1_791_600_000.0
+    s.clock = lambda: now
+    # Rounds 4 minutes apart: the third has two replies in the 10 minutes before it.
+    for n, replies in enumerate([1, 2, 2, 3], 1):
+        s.add(GROUP, message(n, ASKER, "预推免第一批和第二批可以都报吗？"), BOT)
+        await s.round()
+        assert len(sent) == replies
+        now += 240
 
 
 async def test_without_candidates_the_llm_is_not_asked():
