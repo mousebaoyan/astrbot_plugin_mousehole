@@ -66,7 +66,7 @@ QQ 的风控会识别"像机器人"的账号，插件尽量让 bot 的操作和�
 - AstrBot 4.26.2 以上、5.0 以下，Python 3.12 以上（这些版本的 AstrBot 本身就要求 3.12）。通过 aiocqhttp 反向 WebSocket 接 NapCat，接口按 NapCat 4.18 核对；只支持 aiocqhttp。
 - 插件主动连接论坛（REST 和事件流），所在的机器能访问外网就行，论坛不反向连接插件。
 - 自动收录还要：
-  - 一个大模型（整理）和一个嵌入模型（embedding，查重，第 8.5 节），都走 OpenAI 兼容接口。大模型现在用 ECNU 的 `ecnu-plus`；嵌入模型用 bge-m3，跑在维护者家里的电脑上（比如用 Ollama），也可以用 ECNU 的 `ecnu-embedding-small`。
+  - 一个大模型（整理）和一个嵌入模型（embedding，查重，第 8.5 节），都走 OpenAI 兼容接口。大模型现在用 ECNU 的 `ecnu-plus`；嵌入模型用 bge-m3，跑在维护者家里的电脑上（比如用 Ollama），也可以用 ECNU 的 `ecnu-embedding-small`。在猜你想问的五天评测上（第 8.11 节）比过 qwen3-embedding 的 0.6b、4b（加不加指令）和 embeddinggemma-2，群里的提问又短又口语，调用一样多时它们找到的都比 bge-m3 少，所以没换。
   - 插件直接调这两个接口，不经过 AstrBot 的模型配置：AstrBot 的 `llm_generate` 会丢掉每次请求自带的参数，传不了结构化输出和思考模式。回放用的也是同一份客户端和同一份配置（[回放实验](replay.md)第 3 节）。
 - 依赖 httpx 和 numpy，AstrBot 已经自带；周榜要排版成图片，还要 Playwright，和维护者的[群聊摘要插件](https://github.com/JunieXD/astrbot_plugin_qq_group_digest)一样，第一次要在 AstrBot 用的 Python 环境里运行 `python -m playwright install chromium`。不发周榜的不用装浏览器。群里还没有周榜相册时要建一个，NapCat 没有建相册的动作，插件照群聊摘要插件的做法用 `send_packet` 发 QQ 自己的请求，要 NapCat 的 PacketBackend 能用。
 - 论坛的 token：管理员在后台的 bot 页创建，bot 的 QQ 号填机器人自己的，范围选 `read`、`act`、`sync`、`auth`、`events`；自动收录要建标签，再加 `moderate`。建收录用的版块时临时加上 `admin`，建完去掉（第 8.9 节）。
