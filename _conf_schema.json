@@ -325,12 +325,93 @@
         "description": "给论坛上回复多的帖子写 AI 总结",
         "type": "bool",
         "default": true,
-        "hint": "论坛后台的站点页打开「AI 总结」后才开始写：每 30 分钟问论坛一次该写哪些，一轮最多 5 个。和自动收录用同一个大模型、同一份每天的 token 上限，要填好下面的大模型。"
+        "hint": "论坛后台的站点页打开「AI 总结」后才开始写：每 30 分钟问论坛一次该写哪些，一轮最多 5 个。用下面单独配的大模型，各项和自动收录的大模型一样。"
+      },
+      "base_url": {
+        "description": "接口地址",
+        "type": "string",
+        "default": "https://chat.ecnu.edu.cn/open/api/v1",
+        "hint": "OpenAI 兼容的地址，到 /v1 为止。"
+      },
+      "api_key": {
+        "description": "API Key",
+        "type": "string",
+        "default": "",
+        "secret": true
+      },
+      "model": {
+        "description": "模型",
+        "type": "string",
+        "default": "ecnu-plus"
+      },
+      "structured_output": {
+        "description": "结构化输出",
+        "type": "string",
+        "default": "json_schema",
+        "options": [
+          "json_schema",
+          "json_object",
+          "off"
+        ],
+        "hint": "json_schema：按插件给的格式约束输出，ECNU 的模型支持；json_object：只要求输出 JSON；off：不传，接口不支持 response_format 时用。"
+      },
+      "thinking": {
+        "description": "思考模式",
+        "type": "string",
+        "default": "enabled",
+        "options": [
+          "enabled",
+          "disabled",
+          "omit"
+        ],
+        "hint": "enabled 开、disabled 关（ECNU 的 thinking 参数）；omit：不传，接口不认这个参数时用。"
+      },
+      "reasoning_effort": {
+        "description": "思考程度",
+        "type": "string",
+        "default": "low",
+        "options": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "hint": "只在开了思考时生效。ecnu-plus 可选 low、medium、xhigh；ecnu-max 可选 low、high、max。越高越慢、token 越多。"
+      },
+      "temperature": {
+        "description": "温度",
+        "type": "float",
+        "default": 0.2,
+        "slider": {
+          "min": 0,
+          "max": 2,
+          "step": 0.1
+        },
+        "hint": "只在不思考时传；思考时用模型的默认值。"
+      },
+      "max_tokens": {
+        "description": "每次最多输出多少 token",
+        "type": "int",
+        "default": 32768,
+        "hint": "包括思考的部分。想到上限的总结不完整，这个帖子先不写，回复数变了再写。"
+      },
+      "timeout_seconds": {
+        "description": "多久没有新内容就断开（秒）",
+        "type": "int",
+        "default": 120,
+        "hint": "回答是流式传回来的，这是多久没收到新内容就断开，不限一次调用的总时长。"
+      },
+      "tokens_per_day": {
+        "description": "每天最多用多少 token",
+        "type": "int",
+        "default": 1000000,
+        "hint": "AI 总结自己的上限，和自动收录的分开算，输入和输出合计。用完后停下，第二天接着。0 不限。"
       }
     }
   },
   "llm": {
-    "description": "大模型（自动收录的整理和 AI 总结）",
+    "description": "大模型（自动收录的整理和猜你想问）",
     "type": "object",
     "items": {
       "base_url": {
@@ -412,7 +493,7 @@
         "description": "每天最多用多少 token",
         "type": "int",
         "default": 1000000,
-        "hint": "收录和 AI 总结共用，输入和输出合计。用完后都停下，第二天接着。0 不限。ECNU 每 7 天 2 万积分，ecnu-plus 输入每百万 token 100 积分、输出 400 积分，8–18 点翻倍。"
+        "hint": "输入和输出合计，AI 总结的另算。用完后停下，第二天接着。0 不限。ECNU 每 7 天 2 万积分，ecnu-plus 输入每百万 token 100 积分、输出 400 积分，8–18 点翻倍。"
       }
     }
   },

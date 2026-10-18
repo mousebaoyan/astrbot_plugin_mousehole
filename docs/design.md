@@ -102,17 +102,18 @@ QQ 的风控会识别"像机器人"的账号，插件尽量让 bot 的操作和�
 | `archive.notify` | 开 | 每天上午在群里发收录汇总（第 8.8 节）。关掉后照常收录，bot 不在群里说话 |
 | `archive.segment_messages` | 50 | 一段最多几条消息（第 8.1 节） |
 | `archive.follow_messages` | 200 | 跟进多少条消息（第 8.6 节） |
-| `summary.enabled` | 开 | AI 总结（第 8.12 节）；论坛后台打开 AI 总结后才开始写，要填好下面的大模型 |
-| `llm.base_url`、`llm.api_key`、`llm.model` | ECNU 的地址、空、`ecnu-plus` | 大模型，OpenAI 兼容接口，收录和 AI 总结共用 |
+| `summary.enabled` | 开 | AI 总结（第 8.12 节）；论坛后台打开 AI 总结后才开始写，要填好它的大模型 |
+| `summary.base_url`、`summary.model`、`summary.thinking` 等 | 和 `llm.*` 一样 | AI 总结自己的大模型，各项和下面 `llm.*` 的一样，可以用别的模型和思考程度；每天的 token 上限也单独算 |
+| `llm.base_url`、`llm.api_key`、`llm.model` | ECNU 的地址、空、`ecnu-plus` | 大模型，OpenAI 兼容接口，收录和猜你想问用 |
 | `llm.structured_output` | `json_schema` | `json_schema` 按插件给的格式约束输出；`json_object` 只要求是 JSON；`off` 不传 |
 | `llm.thinking`、`llm.reasoning_effort` | `enabled`、`low` | 思考模式和思考程度（ECNU 的 `thinking`、`reasoning_effort`）；`omit` 是不传，给不认这些参数的接口用 |
 | `llm.temperature` | 0.2 | 只在不思考时传 |
 | `llm.max_tokens`、`llm.timeout_seconds` | 32768、120 | 每次最多输出多少 token（含思考）；多久没收到新内容就断开（第 8.2 节） |
-| `llm.tokens_per_day` | 100 万 | 每天最多用多少 token，收录和 AI 总结合计；用完了都停下，第二天接着；0 不限 |
+| `llm.tokens_per_day` | 100 万 | 每天最多用多少 token，AI 总结的另算；用完了停下，第二天接着；0 不限 |
 | `embedding.base_url`、`embedding.api_key`、`embedding.model` | 本机 Ollama、空、`bge-m3` | 嵌入模型，OpenAI 兼容接口；换了地址或模型，向量索引重建 |
 | `embedding.min_similarity` | 0.5 | 语义相似的门槛（第 8.5 节） |
 
-同步哪些群在论坛后台关联，插件不另外配。打开了收录、却没填好大模型或嵌入模型时，或者打开了 AI 总结、却没填好大模型时，插件记一条错误，其他功能照常。
+同步哪些群在论坛后台关联，插件不另外配。打开了收录、却没填好大模型或嵌入模型时，或者打开了 AI 总结、却没填好它的大模型时，插件记一条错误，其他功能照常。
 
 回放要调的数（一段的大小、跟进多久、相似的门槛）做成配置，调好后改默认值，不用改代码。其他频率和间隔写成常量，见下面各节。
 
@@ -508,7 +509,7 @@ https://bbs.mousebaoyan.cn/t/43
 
 论坛帖子页上的 AI 总结（论坛总体设计 §8.18）由插件写：论坛定哪些帖子该写，插件取内容、调大模型，再推回去。论坛后台的开关关着时，论坛不派活，插件什么都不做。不在群里发消息，也不调 QQ 的接口。
 
-- **轮次**：每 30 分钟问论坛一次该写哪些（`GET /bot/summaries/due`），一轮最多 5 个，一个写完再写下一个。和收录用同一个大模型、同一份每天的 token 上限（`llm.tokens_per_day`），用完了等第二天。
+- **轮次**：每 30 分钟问论坛一次该写哪些（`GET /bot/summaries/due`），一轮最多 5 个，一个写完再写下一个。大模型单独配（`summary.*`，各项和收录的 `llm.*` 一样），每天的 token 上限（`summary.tokens_per_day`）也单独算，用完了等第二天。
 - **给大模型的**：帖子的版块、类型（问答、讨论、投票、保研定位）、标签和标题，再按楼层号列出公开的楼层，标明哪层是楼主写的、哪层被采纳、有几个赞（`GET /bot/summaries/{thread}/source`）。论坛不给名字，也不给投票的结果。每层最多 500 个字；全部超过 2 万字时，先留主楼、被采纳的和赞多的，其余的不给。
 - **要的格式**：一个 JSON 对象 `{ lead, points: [{ text, floors }] }`。`lead` 一句话说清讨论的是什么，问答帖说问的是什么；`points` 2–5 条要点，每条带出处的楼层号。问答帖写结论和值得看的回答，保研定位帖写大家对各所学校的看法，讨论帖写主要观点。只写帖子里有的，不写人名。
 - **检查**：去掉不在给出的楼层里的楼层号，去掉没有出处的要点，超长的截断，最多留 5 条。一条要点都不剩、或者不是 JSON 的，这个帖子先不推；回复数没变就不再写它，免得每轮都白花 token。

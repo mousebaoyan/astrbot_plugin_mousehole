@@ -37,6 +37,7 @@ class Mousehole(Star):
         self.config = config
         self.forum: Forum | None = None
         self.llm: LLM | None = None
+        self.summary_llm: LLM | None = None
         self.embedder: Embedder | None = None
         self.archive: Archive | None = None
         self.suggest: Suggest | None = None
@@ -92,11 +93,12 @@ class Mousehole(Star):
                     templates=c["archive"],
                     prefixes=self.context.get_config()["wake_prefix"],
                 )
-        if c["summary"]["enabled"] and not (m["base_url"] and m["model"]):
-            logger.error("鼠洞插件：AI 总结要填好大模型的地址和模型，现在不写总结")
-        elif c["summary"]["enabled"]:
-            self.llm = self.llm or LLM(Settings.of(m))
-            self.summaries = Summaries(self.forum, self.llm.complete)
+        s = c["summary"]
+        if s["enabled"] and not (s["base_url"] and s["model"]):
+            logger.error("鼠洞插件：AI 总结要在它的配置里填好大模型的地址和模型，现在不写总结")
+        elif s["enabled"]:
+            self.summary_llm = LLM(Settings.of(s))
+            self.summaries = Summaries(self.forum, self.summary_llm.complete)
         lottery = c["lottery"]
         self.events = Events(
             self.forum,
@@ -241,7 +243,7 @@ class Mousehole(Star):
         for task in self.tasks:
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
-        for client in (self.forum, self.llm, self.embedder):
+        for client in (self.forum, self.llm, self.summary_llm, self.embedder):
             if client:
                 await client.close()
 
