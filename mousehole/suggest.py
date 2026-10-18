@@ -97,15 +97,32 @@ class Suggest:
             for m in messages:
                 if found := await self.threads_for(group, m):
                     asked.append((group, m, found))
-        if not asked:
-            return
+        told, tokens = await self.tell(asked, now) if asked else (0, 0)
+        if waiting:
+            # In numbers only: the questions are the members' words.
+            log.info(
+                "猜你想问: %d questions, %d with threads, %d told, %d tokens",
+                sum(len(messages) for messages in waiting.values()),
+                len(asked),
+                told,
+                tokens,
+            )
+
+    async def tell(
+        self, asked: list[tuple[int, Message, list[dict]]], now: float
+    ) -> tuple[int, int]:
+        """The questions the LLM finds threads answer get them; how many did, and the tokens
+        the LLM took."""
         prompt = judge.suggest_prompt([(text_of(m), found) for _, m, found in asked])
-        answer, _, _ = await self.complete(judge.SUGGEST, prompt, judge.SUGGEST_SCHEMA)
+        answer, input_tokens, output_tokens = await self.complete(
+            judge.SUGGEST, prompt, judge.SUGGEST_SCHEMA
+        )
+        tokens = input_tokens + output_tokens
         try:
             raw = judge.extract_json(answer)
         except ValueError:
             log.warning("The LLM's answer for 猜你想问 is not JSON")
-            return
+            return 0, tokens
         picked = judge.suggestions(raw, [len(found) for _, _, found in asked])
         replies: Counter[int] = Counter()
         for i, (group, m, found) in enumerate(asked):
@@ -118,6 +135,7 @@ class Suggest:
             replies[group] += 1
             for t in threads:
                 self.told[group, t["id"]] = now
+        return replies.total(), tokens
 
     async def threads_for(self, group: int, m: Message) -> list[dict]:
         """The threads that may answer it: with replies, not the asker's own, not told lately."""
