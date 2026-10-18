@@ -104,6 +104,15 @@ async def test_a_group_gets_two_replies_in_any_ten_minutes_at_most():
         now += 240
 
 
+async def test_the_same_question_said_by_others_within_a_minute_is_a_joke_not_asked():
+    # Script() has nothing to answer with: the LLM is not asked.
+    s, sent, _ = await suggest_with(Script(), ANSWERER)
+    s.add(GROUP, message(1, ASKER, "科大这辈子还有机会吗"), BOT)
+    s.add(GROUP, message(30, OTHER, "科大这辈子还有机会吗"), BOT)
+    await s.round()
+    assert sent == []
+
+
 async def test_without_candidates_the_llm_is_not_asked():
     # The asker's own thread is none for them; Script() has nothing to answer with.
     s, sent, _ = await suggest_with(Script(), ASKER)

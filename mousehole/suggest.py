@@ -49,6 +49,9 @@ REPLIES = 2
 WINDOW = 600
 # Seconds before a thread is told to a group again.
 AGAIN_AFTER = 6 * 3600
+# Seconds within which others saying the very same is a chorus, a joke going round, not a
+# question.
+CHORUS = 60
 
 
 def asks(text: str) -> bool:
@@ -122,6 +125,8 @@ class Suggest:
         asked = []
         for group, questions in waiting.items():
             for m, lines in questions:
+                if chorus(m, self.recent[group]):
+                    continue
                 if found := await self.threads_for(group, m):
                     asked.append((group, m, lines, found))
         told, tokens = await self.tell(asked, now) if asked else (0, 0)
@@ -213,6 +218,13 @@ class Suggest:
 
 def text_of(m: Message) -> str:
     return " ".join(plain(m.segments).split())
+
+
+def chorus(m: Message, recent: deque[Message]) -> bool:
+    text = text_of(m)
+    return any(
+        r.user != m.user and abs(r.time - m.time) < CHORUS and text_of(r) == text for r in recent
+    )
 
 
 def lines_of(m: Message, recent: deque[Message], bot: int) -> list[str]:
