@@ -725,7 +725,23 @@ class Archive:
             # Segments archived while it goes are for the next summary.
             count = len(entries)
             try:
-                await self.notify(group, summary_message(entries, self.site, self.templates))
+                heat: dict[int, int] = {}
+                for e in entries[:count]:
+                    try:
+                        thread = await self.forum.call("GET", f"/threads/{e['thread']}")
+                    except ForumError as err:
+                        # Deleted or merged into another since it was archived.
+                        if err.code not in ("not_found", "thread_merged"):
+                            raise
+                        continue
+                    heat[e["thread"]] = thread["reply_count"] + thread["like_count"]
+                # The most talked about first: only the first few are named.
+                named = sorted(
+                    (e for e in entries[:count] if e["thread"] in heat),
+                    key=lambda e: -heat[e["thread"]],
+                )
+                if named:
+                    await self.notify(group, summary_message(named, self.site, self.templates))
             except Exception:
                 log.exception("Sending the archive summary to group %s failed", group)
                 sent = False

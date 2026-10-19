@@ -1,3 +1,4 @@
+import re
 from contextlib import aclosing
 from datetime import datetime
 
@@ -18,6 +19,7 @@ from mousehole.archive import (
     until,
 )
 from mousehole.llm import Truncated, Unavailable
+from tools.fake_forum import Post, Thread
 
 TUNING = Tuning()
 
@@ -546,16 +548,31 @@ async def test_the_summary_names_each_new_thread_but_not_questions_asked_before(
     assert len(s.sent) == 1
 
 
-async def test_the_summary_waits_on_disk_and_names_ten_at_most(setup):
-    entry = {"user": ASKER, "kind": "question", "thread": 1, "title": "问题"}
+async def test_the_summary_waits_on_disk_and_names_the_ten_most_talked_about(setup):
     s = setup(Script())
-    s.archive.remember(GROUP, [entry] * 12)
+    s.archive.remember(
+        GROUP,
+        [
+            {"user": ASKER, "kind": "question", "thread": i, "title": f"问题{i}"}
+            for i in range(1, 14)
+        ],
+    )
 
     again = setup(Script())
+    # Thread i has i % 4 replies, 5's opening a like; 13 was deleted since.
+    for i in range(1, 14):
+        posts = [Post(100 * i + f, i, f + 1, ASKER, "", None, 0) for f in range(i % 4 + 1)]
+        again.forum.threads[i] = Thread(
+            i, "qa", "question", f"问题{i}", [], ASKER, 0, posts, deleted=i == 13
+        )
+    again.forum.threads[5].posts[0].reactions[OTHER] = "heart"
     await again.archive.send_summary()
     [(_, segments)] = again.sent
-    assert texts(segments).count("问题") == 10
-    assert texts(segments).endswith("还有 2 个，到鼠洞上看：https://forum.test")
+    text = texts(segments)
+    assert text.startswith("鼠洞收录了群里的 12 个帖子")
+    # Alike ones in the order they were archived.
+    assert re.findall(r"问题(\d+)", text) == ["3", "7", "11", "2", "5", "6", "10", "1", "9", "4"]
+    assert text.endswith("还有 2 个，到鼠洞上看：https://forum.test")
     assert again.archive.summary == {}
 
 

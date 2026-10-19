@@ -122,6 +122,7 @@ class FakeForum:
             "board": {"slug": board["slug"], "name": board["name"]},
             "tags": t.tags,
             "reply_count": sum(not p.deleted for p in t.posts[1:]),
+            "like_count": len(t.posts[0].reactions),
             "floor_count": len(t.posts),
             "last_post_at": max(p.created_at for p in t.posts),
             "created_at": t.created_at,
