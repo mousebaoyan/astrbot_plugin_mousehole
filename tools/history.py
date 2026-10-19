@@ -408,9 +408,9 @@ async def archive_exports(
                 if take_over(runs, work, done) is None:
                     return
                 n = len(runs) - 1
-                log.info(
-                    "Run %d: %s to %s, taken over", n, clock(runs[n].start), clock(runs[n].end)
-                )
+                was = next(i for i, r in enumerate(runs) if r.end == runs[n].start)
+                start, end = clock(runs[n].start), clock(runs[n].end)
+                log.info("Run %d: %s to %s, taken over from run %d", n, start, end, was)
             runs[n].taken = True
             save_runs()
             taken += await organize(n, runs[n], None if most is None else most - taken)
