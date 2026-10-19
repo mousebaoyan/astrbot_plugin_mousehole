@@ -200,10 +200,14 @@ class FakeForum:
                 return self.create_thread(body, user)
             case "GET", ["threads", thread]:
                 t = self.threads.get(int(thread))
-                return ok(self.thread_json(t)) if t and not t.deleted else error(404, "not_found")
+                if not t or t.deleted:
+                    return error(404, "thread_not_found")
+                return ok(self.thread_json(t))
             case "GET", ["bot", "summaries", thread, "source"]:
                 t = self.threads.get(int(thread))
-                return ok(self.source_json(t)) if t and not t.deleted else error(404, "not_found")
+                if not t or t.deleted:
+                    return error(404, "thread_not_found")
+                return ok(self.source_json(t))
             case "PATCH", ["threads", thread]:
                 t = self.threads[int(thread)]
                 opening = t.posts[0]

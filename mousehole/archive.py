@@ -731,7 +731,7 @@ class Archive:
                         thread = await self.forum.call("GET", f"/threads/{e['thread']}")
                     except ForumError as err:
                         # Deleted or merged into another since it was archived.
-                        if err.code not in ("not_found", "thread_merged"):
+                        if err.code not in ("thread_not_found", "thread_merged"):
                             raise
                         continue
                     heat[e["thread"]] = thread["reply_count"] + thread["like_count"]
