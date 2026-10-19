@@ -271,6 +271,7 @@ async def archive_exports(
 ) -> None:
     """Each export's messages from before `until` taken in and archived batch by batch, as the
     plugin would have, by `workers` side by side, `most` batches each at most."""
+    data.mkdir(parents=True, exist_ok=True)
     # One index for all, so each worker sees the threads the others post; rebuilt, for those
     # the plugin posted since the last run.
     await patiently(index.rebuild)
@@ -304,7 +305,6 @@ async def archive_exports(
         key=lambda b: b.start,
     )
 
-    data.mkdir(parents=True, exist_ok=True)
     done_file = data / "done.txt"
     done = set(done_file.read_text().split()) if done_file.exists() else set()
     segments_file = data / "segments.jsonl"
