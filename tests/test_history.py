@@ -96,6 +96,22 @@ async def test_what_came_after_until_is_left_to_the_plugin(tmp_path):
     assert len((data / "done.txt").read_text().split()) == 1
 
 
+async def test_what_began_before_since_is_left_for_a_run_without_it(tmp_path):
+    forum = FakeForum()
+    client = forum.client()
+    path, data = export(tmp_path), tmp_path / "data"
+
+    async def run(llm, **since):
+        index = Index(client, embed, "test", None)
+        await archive_exports(client, llm, index, [path], data, Tuning(), 1, **since)
+
+    await run(Script(NOTHING), since=EVENING)
+    assert forum.threads == {}
+    await run(Script({"new": [QUESTION, ANSWER], "edit": []}))
+    assert len(forum.threads) == 1
+    assert len((data / "done.txt").read_text().split()) == 2
+
+
 async def test_who_left_before_the_forum_knew_them_is_archived_under_their_name(tmp_path):
     forum = FakeForum()
     forum.strangers.add(ASKER)

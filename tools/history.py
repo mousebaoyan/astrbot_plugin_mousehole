@@ -258,6 +258,7 @@ async def history(args: argparse.Namespace) -> None:
         args.workers,
         args.batches,
         datetime.fromisoformat(args.until).timestamp() if args.until else float("inf"),
+        datetime.fromisoformat(args.start).timestamp() if args.start else -float("inf"),
     )
     await forum.close()
     await llm.close()
@@ -274,9 +275,11 @@ async def archive_exports(
     workers: int,
     most: int | None = None,
     until: float = float("inf"),
+    since: float = -float("inf"),
 ) -> None:
     """Each export's messages from before `until` taken in and archived batch by batch, as the
-    plugin would have, by `workers` side by side, `most` batches each at most."""
+    plugin would have, by `workers` side by side, `most` batches each at most, those begun
+    before `since` left for later."""
     data.mkdir(parents=True, exist_ok=True)
     # One index for all, so each worker sees the threads the others post; rebuilt, for those
     # the plugin posted since the last run.
@@ -325,6 +328,8 @@ async def archive_exports(
     outside = [b for b in work if not any(r.start <= b.start < r.end for r in runs)]
     if outside:
         raise SystemExit(f"{len(outside)} batches are in none of the runs of {runs_file}")
+    # The runs are cut from all, for a run without `since` to go on with the rest.
+    work = [b for b in work if b.start >= since]
 
     def save_runs() -> None:
         write_file(runs_file, json.dumps([{"start": r.start, "end": r.end} for r in runs]))
@@ -429,6 +434,11 @@ def main() -> None:
     parser.add_argument("--batches", type=int, help="每个 worker 最多收这么多批，先小范围试时用")
     parser.add_argument(
         "--until", help="只收这一刻（YYYY-MM-DD HH:MM）之前的消息，之后的由插件的自动收录来收"
+    )
+    parser.add_argument(
+        "--from",
+        dest="start",
+        help="只收这一刻（YYYY-MM-DD HH:MM）以后开始的批次，先收要紧的一段；之前的留给不带它的下一次",
     )
     parser.add_argument("--off-peak", action="store_true", help="避开 Step Plan 的高峰时段")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
