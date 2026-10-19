@@ -1,12 +1,15 @@
+import asyncio
 import json
 from datetime import datetime
+from itertools import pairwise
 
 from conftest import GROUP, Script, embed
 
-from mousehole.archive import Tuning
+from mousehole.archive import Message, Tuning
 from mousehole.similar import Index
+from tools import history
 from tools.fake_forum import FakeForum
-from tools.history import archive_exports
+from tools.history import Batch, Run, archive_exports, runs_of, take_over
 
 ASKER, ANSWERER = 10001, 10002
 MORNING = datetime(2026, 10, 10, 10).timestamp()
@@ -105,3 +108,65 @@ async def test_who_left_before_the_forum_knew_them_is_archived_under_their_name(
     [thread] = forum.threads.values()
     # Their picture too, which the bot uploads for them.
     assert (thread.author, thread.posts[0].body.count("![](/uploads/")) == (ASKER, 1)
+
+
+def batch(day, hour, weight):
+    at = datetime(2026, 4, day, hour).timestamp()
+    return Batch(GROUP, [Message(int(at), ASKER, at, [])], weight)
+
+
+def test_runs_are_cut_at_four_by_what_there_is_to_organize():
+    # Half is before the busy evening of the 2nd, which goes on into the night: no cut there.
+    work = [batch(1, 9, 10), batch(1, 19, 10), batch(2, 9, 40), batch(2, 19, 40), batch(3, 9, 10)]
+    first, second = runs_of(work, 2)
+    assert (first.start, first.end) == (work[0].start, datetime(2026, 4, 2, 4).timestamp())
+    assert (second.start, second.end) == (first.end, work[-1].start + 1)
+
+
+def test_a_worker_done_takes_over_the_later_half_of_what_is_left_of_the_longest_run():
+    work = [batch(day, 9, 600) for day in range(1, 9)]
+    runs = [
+        Run(work[0].start, work[2].start, at=work[1].start),
+        Run(work[2].start, work[-1].start + 1),
+    ]
+    runs[1].at = work[2].start
+    done = {work[0].name}
+    later = take_over(runs, work, done)
+    # Of the 5 batches left after the one at hand, the last 3 make about half.
+    assert (later.start, later.end) == (datetime(2026, 4, 6, 4).timestamp(), work[-1].start + 1)
+    assert runs[1].end == later.start
+    # What is left of the first is too little to cut.
+    runs[1].end = later.start
+    assert take_over(runs[:1], work, done) is None
+
+
+async def test_runs_taken_over_take_each_batch_once_and_go_on_from_where_they_were(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(history, "TAKE_OVER_LEAST", 1)
+    days = [datetime(2026, 4, day, 10).timestamp() for day in range(1, 9)]
+    # The later days take longer to organize.
+    said = ["今天组会讲什么"] * 4 + ["慢"] * 4
+    messages = [
+        exported(i, ASKER, at, [text(t)]) for i, (at, t) in enumerate(zip(days, said, strict=True))
+    ]
+    path = tmp_path / "group.json"
+    info = {"peerUid": str(GROUP), "selfUin": "20000"}
+    path.write_text(json.dumps({"chatInfo": info, "messages": messages}), encoding="utf-8")
+    forum = FakeForum()
+    client = forum.client()
+
+    async def nothing(system, prompt, schema):
+        await asyncio.sleep(0.05 if "慢" in prompt else 0)
+        return json.dumps(NOTHING), 1000, 100
+
+    data = tmp_path / "data"
+    await archive_exports(
+        client, nothing, Index(client, embed, "test", None), [path], data, Tuning(), 2
+    )
+    done = (data / "done.txt").read_text().split()
+    runs = json.loads((data / "runs.json").read_text())
+    assert (len(done), len(set(done))) == (8, 8)
+    assert len(runs) > 2
+    bounds = sorted((r["start"], r["end"]) for r in runs)
+    assert all(a[1] == b[0] for a, b in pairwise(bounds))

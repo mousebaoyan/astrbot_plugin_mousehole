@@ -105,6 +105,13 @@ def plain(segments: list[dict]) -> str:
     return "".join(s["data"]["text"] for s in segments if s["type"] == "text")
 
 
+def worth(m: Message, bot: int, prefixes: list[str]) -> bool:
+    """Not the bot's own, not a command, and more than stickers and faces."""
+    if m.user == bot or plain(m.segments).lstrip().startswith(tuple(prefixes)):
+        return False
+    return any(shows(s) for s in m.segments)
+
+
 def shown_text(m: Message, alias: Callable[[int], str]) -> str:
     """A message as the models see it: those it @s by `alias`, pictures and the rest as
     placeholders."""
@@ -192,6 +199,12 @@ class Message:
     # The floor it was a reaction to, when it said no more than that.
     reacted: Floor | None = None
     recalled: bool = False
+
+    @property
+    def unknown_writer(self) -> bool:
+        """History whose writer couldn't be told for sure has a user below zero (design §8.10):
+        the LLM reads it for what goes on, nothing of it is archived."""
+        return self.user < 0
 
     @property
     def quoted(self) -> int | None:
@@ -363,19 +376,13 @@ class Archive:
 
     # ---- Taking messages in
 
-    def worth(self, m: Message, bot: int) -> bool:
-        """Not the bot's own, not a command, and more than stickers and faces."""
-        if m.user == bot or plain(m.segments).lstrip().startswith(tuple(self.prefixes)):
-            return False
-        return any(shows(s) for s in m.segments)
-
     async def add(self, group: int, m: Message, bot: int) -> bool:
         """Kept on disk for a round to take in, its pictures copied to the forum now: QQ's links
         expire within hours (design §8.1). False for one not worth keeping."""
         if str(group) not in self.state["since"]:
             self.state["since"][str(group)] = self.clock()
             self.save_state()
-        if not self.worth(m, bot):
+        if not worth(m, bot, self.prefixes):
             return False
         for s in m.segments:
             if s["type"] != "image" or is_sticker(s) or not s["data"].get("url"):
@@ -611,7 +618,9 @@ class Archive:
             target = chat.by_id.get(m.quoted)
             parts.append(f"↩#{target.number}" if target else "↩更早的消息")
         parts.append(shown_text(m, chat.alias))
-        if m.floor is not None:
+        if m.unknown_writer:
+            parts.append("〔不收〕")
+        elif m.floor is not None:
             parts.append(f"〔已收：{names[m.floor]}〕" if m.floor in names else "〔已收〕")
         elif m.reacted is not None:
             name = names.get(m.reacted)

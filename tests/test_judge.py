@@ -149,3 +149,13 @@ def test_a_reply_naming_its_new_thread_or_no_floor_replies_to_the_opening_post()
     # One naming a floor there isn't is kept, only not linked.
     assert [(a.ref, a.reply_to) for a in plan.answers] == [("N2", None), ("N3", None)]
     assert plan.dropped == []
+
+
+def test_what_someone_not_known_said_is_read_but_not_archived():
+    numbers = numbered(message(1, -1, "夏令营要准备什么"), message(2, 2, "成绩单"))
+    react = {"message": 1, "post": "Q1", "emoji": "+1", "boost": None}
+    q = Question("夏令营要准备什么", opening=True, last=0)
+    q.floor = Floor(10, 1, 2, [numbers[2]], "成绩单", None, q)
+    plan = check({"new": [QUESTION], "react": [react]}, numbers, {"Q1": q}, {"Q1": q.floor})
+    assert (plan.questions, plan.reactions) == ([], [])
+    assert plan.dropped == ["new N1: #1 has no known writer", "react #1: no known writer"]

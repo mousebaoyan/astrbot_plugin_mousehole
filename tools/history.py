@@ -12,8 +12,10 @@ import logging
 import sys
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from datetime import datetime
 from functools import partial
+from itertools import pairwise
 from pathlib import Path
 
 import httpx
@@ -27,6 +29,7 @@ from mousehole.archive import (
     is_sticker,
     unavailable,
     until,
+    worth,
 )
 from mousehole.forum import Forum, ForumError, error_of
 from mousehole.llm import LLM, Embedder, Settings
@@ -37,9 +40,14 @@ log = logging.getLogger("astrbot.plugin.astrbot_plugin_mousehole")
 
 # Batches are worked on side by side, as many as Step Plan answers at once.
 WORKERS = 5
+# Commands to the bot, not talk.
+PREFIXES = ["/"]
 # Batches start at these hours: unlike the plugin, which takes a talk in once it stops, the
 # history has no hurry, and whole batches keep more talks whole in fewer calls.
 BATCH_HOURS = (4, 18)
+# Of what is left of a run, the least a worker done with its own takes over (design §8.10):
+# less is done soon enough without a talk cut off.
+TAKE_OVER_LEAST = 1000
 # Step Plan's peak hours, Beijing time on weekdays, when Step 5 Preview costs twice as much.
 PEAK = ((9, 12), (14, 18))
 
@@ -87,15 +95,82 @@ def batches(messages: list[Message]) -> list[list[Message]]:
     return found
 
 
-def shares(work: list[tuple[int, list[Message]]], count: int) -> list[list[tuple[int, list]]]:
-    """Batches in order of time, cut into `count` runs of about as many messages each."""
-    total = sum(len(b) for _, b in work)
-    runs: list[list[tuple[int, list]]] = [[] for _ in range(count)]
-    seen = 0
-    for group, batch in work:
-        runs[min(count - 1, seen * count // total)].append((group, batch))
-        seen += len(batch)
-    return runs
+@dataclass
+class Batch:
+    group: int
+    messages: list[Message]
+    # Those the LLM organizes, which the time it takes goes by.
+    weight: int
+
+    @property
+    def start(self) -> float:
+        return self.messages[0].time
+
+    @property
+    def name(self) -> str:
+        # As start_round names its file.
+        return f"{self.group}-{int(self.messages[-1].time)}"
+
+
+@dataclass
+class Run:
+    """The batches from `start` to `end`, by their first messages, organized in order by one
+    worker, which follows its threads from one into the next (design §8.10)."""
+
+    start: float
+    end: float
+    # The first message of the batch being organized; whether a worker has the run.
+    at: float = field(default=float("-inf"), compare=False)
+    taken: bool = field(default=False, compare=False)
+
+
+def cuts(work: list[Batch]) -> list[float]:
+    """Where runs may be cut: at the first of BATCH_HOURS, when the group is quietest, for a
+    talk cut off goes on without what was said before."""
+    found = set()
+    for b in work:
+        t = datetime.fromtimestamp(b.start)
+        if BATCH_HOURS[0] <= t.hour < BATCH_HOURS[1]:
+            found.add(t.replace(hour=BATCH_HOURS[0], minute=0, second=0, microsecond=0))
+    return sorted(t.timestamp() for t in found)
+
+
+def nearest(work: list[Batch], points: list[float], goal: float) -> float | None:
+    """The point with about `goal` of the work's weight before it."""
+    return min(
+        points, key=lambda c: abs(sum(b.weight for b in work if b.start < c) - goal), default=None
+    )
+
+
+def runs_of(work: list[Batch], count: int) -> list[Run]:
+    """The work cut into `count` runs of about the same weight."""
+    total = sum(b.weight for b in work)
+    bounds = [work[0].start]
+    for k in range(1, count):
+        cut = nearest(work, cuts(work), total * k / count)
+        if cut is not None and cut > bounds[-1]:
+            bounds.append(cut)
+    bounds.append(work[-1].start + 1)
+    return [Run(a, b) for a, b in pairwise(bounds)]
+
+
+def take_over(runs: list[Run], work: list[Batch], done: set[str]) -> Run | None:
+    """For a worker done with its run: the later half of what is left of the run with most
+    left, cut where runs may be, if that half weighs TAKE_OVER_LEAST at least."""
+
+    def left(r: Run) -> list[Batch]:
+        return [b for b in work if r.at < b.start < r.end and b.name not in done]
+
+    run = max(runs, key=lambda r: sum(b.weight for b in left(r)))
+    rest = left(run)
+    points = [c for c in cuts(rest) if c > max(run.at, run.start)]
+    cut = nearest(rest, points, sum(b.weight for b in rest) / 2)
+    if cut is None or sum(b.weight for b in rest if b.start >= cut) < TAKE_OVER_LEAST:
+        return None
+    later = Run(cut, run.end)
+    run.end = cut
+    runs.append(later)
+    return later
 
 
 async def upload(forum: Forum, m: Message, pictures: dict[str, Path]) -> None:
@@ -161,7 +236,6 @@ async def patiently[T](work: Callable[[], Awaitable[T]]) -> T:
 async def history(args: argparse.Namespace) -> None:
     config = json.loads(Path(args.config).read_text(encoding="utf-8-sig"))
     data = Path(args.data)
-    data.mkdir(parents=True, exist_ok=True)
     forum = Forum(config["forum_url"], config["token"], Patient())
     llm = LLM(Settings.of(config["llm"] | {"tokens_per_day": 0}))
     e = config["embedding"]
@@ -196,10 +270,7 @@ async def archive_exports(
     until: float = float("inf"),
 ) -> None:
     """Each export's messages from before `until` taken in and archived batch by batch, as the
-    plugin would have, `most` batches a worker at most."""
-    stranded = [p for p in data.glob("worker-*/batch/*.jsonl") if int(p.parts[-3][7:]) >= workers]
-    if stranded:
-        raise SystemExit(f"{len(stranded)} batches are left by more workers than {workers}")
+    plugin would have, by `workers` side by side, `most` batches each at most."""
     # One index for all, so each worker sees the threads the others post; rebuilt, for those
     # the plugin posted since the last run.
     await patiently(index.rebuild)
@@ -216,34 +287,54 @@ async def archive_exports(
         senders.setdefault(group, {}).update(
             (int(m["sender"]["uin"]), m["sender"])
             for m in export["messages"]
-            # System messages have no sender.
-            if not m["system"] and m["timestamp"] / 1000 < until and m["sender"]["uin"] != str(bot)
+            # System messages have no sender; one not known for sure, below zero, no account.
+            if not m["system"]
+            and m["timestamp"] / 1000 < until
+            and 0 < int(m["sender"]["uin"]) != bot
         )
         for p in (path.parent / "resources" / "images").glob("*"):
             pictures[p.name.split("_")[0].lower()] = p
     await patiently(lambda: enroll(forum, senders))
-    work = [
-        (group, batch)
-        for group, kept in chats.items()
-        for batch in batches(sorted(kept.values(), key=lambda m: m.time))
-    ]
-    work.sort(key=lambda w: w[1][0].time)
+    work = sorted(
+        (
+            Batch(group, batch, sum(worth(m, bots[group], PREFIXES) for m in batch))
+            for group, kept in chats.items()
+            for batch in batches(sorted(kept.values(), key=lambda m: m.time))
+        ),
+        key=lambda b: b.start,
+    )
 
+    data.mkdir(parents=True, exist_ok=True)
     done_file = data / "done.txt"
     done = set(done_file.read_text().split()) if done_file.exists() else set()
     segments_file = data / "segments.jsonl"
+    runs_file = data / "runs.json"
+    if runs_file.exists():
+        runs = [Run(**r) for r in json.loads(runs_file.read_text())]
+    else:
+        runs = runs_of(work, workers)
+
+    def save_runs() -> None:
+        runs_file.write_text(json.dumps([{"start": r.start, "end": r.end} for r in runs]))
+
+    save_runs()
+
+    def finished(r: Run) -> bool:
+        return all(b.name in done for b in work if r.start <= b.start < r.end)
 
     async def nothing(group: int, segments: list[dict]) -> None:
         pass
 
-    async def worker(n: int, share: list[tuple[int, list[Message]]]) -> None:
+    async def organize(n: int, run: Run, most: int | None) -> int:
+        """Its batches, `most` at most, of which the number taken is returned. Its end may come
+        nearer as it goes, by a take-over."""
         now = 0.0
         archive = Archive(
             forum,
             complete,
             index,
-            data=data / f"worker-{n}",
-            prefixes=["/"],
+            data=data / f"run-{n}",
+            prefixes=PREFIXES,
             site="",
             # No summary is sent (design §8.10).
             templates={},
@@ -251,9 +342,8 @@ async def archive_exports(
             tuning=tuning,
             clock=lambda: now,
         )
-        if share:
-            # Threads the workers before this one open as they go are left to them.
-            archive.elsewhere = (work[0][1][0].time, share[0][1][0].time)
+        # Threads the runs before this one open as they go are left to them.
+        archive.elsewhere = (work[0].start, run.start)
         await patiently(archive.refresh_taxonomy)
         # A batch stopped halfway goes on; one stopped while being taken in is taken in again.
         for path in archive.pending.glob("*.jsonl"):
@@ -265,36 +355,47 @@ async def archive_exports(
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")
             posted = sum(not d.startswith("tag ") for d in r["done"])
             print(
-                f"worker {n} group {r['group']} {clock(r['times'][0])}: "
+                f"run {n} group {r['group']} {clock(r['times'][0])}: "
                 f"{posted} done, {len(r['dropped'])} dropped",
                 file=sys.stderr,
             )
 
-        async def run() -> None:
+        async def go_on() -> None:
             async for r in archive.batch():
                 report(r)
 
-        await patiently(run)
+        await patiently(go_on)
         taken = 0
-        for group, batch in share:
-            # As start_round names its file.
-            now = batch[-1].time
-            name = f"{group}-{int(now)}"
-            if name in done:
+        for b in work:
+            if not run.start <= b.start < run.end or b.name in done:
                 continue
             if most is not None and taken == most:
                 break
-            for m in batch:
-                if archive.worth(m, bots[group]):
+            run.at, now = b.start, b.messages[-1].time
+            for m in b.messages:
+                if worth(m, bots[b.group], PREFIXES):
                     await upload(forum, m, pictures)
-                    archive.wait(group, m.record())
+                    archive.wait(b.group, m.record())
             archive.start_round(everything=True)
             with done_file.open("a") as f:
-                f.write(name + "\n")
+                f.write(b.name + "\n")
             taken += 1
-            await patiently(run)
+            await patiently(go_on)
+        return taken
 
-    await asyncio.gather(*(worker(n, s) for n, s in enumerate(shares(work, workers))))
+    async def worker() -> None:
+        taken = 0
+        while most is None or taken < most:
+            run = next((r for r in runs if not r.taken and not finished(r)), None)
+            if run is None and (run := take_over(runs, work, done)) is not None:
+                log.info("Run %d taken over from %s", len(runs) - 1, clock(run.start))
+            if run is None:
+                return
+            run.taken = True
+            save_runs()
+            taken += await organize(runs.index(run), run, None if most is None else most - taken)
+
+    await asyncio.gather(*(worker() for _ in range(workers)))
 
 
 def main() -> None:
@@ -302,7 +403,7 @@ def main() -> None:
     parser.add_argument("exports", nargs="+", help="QQChatExporter 导出的 JSON")
     parser.add_argument("--config", required=True, help="插件的配置，大模型可以另换")
     parser.add_argument("--data", required=True, help="进度和中间文件放在哪个目录")
-    parser.add_argument("--workers", type=int, default=WORKERS, help="同时收几批，续跑时不要改")
+    parser.add_argument("--workers", type=int, default=WORKERS, help="同时收几批")
     parser.add_argument("--batches", type=int, help="每个 worker 最多收这么多批，先小范围试时用")
     parser.add_argument(
         "--until", help="只收这一刻（YYYY-MM-DD HH:MM）之前的消息，之后的由插件的自动收录来收"
