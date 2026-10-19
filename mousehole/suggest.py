@@ -187,8 +187,9 @@ class Suggest:
                     continue
                 source = await self.forum.call("GET", f"/bot/summaries/{thread}/source")
             except ForumError as e:
-                # Gone; or a moderator turned off its AI summary, which takes the source too.
-                if e.status != 404:
+                # Gone or merged away; or a moderator turned off its AI summary, which takes the
+                # source too. By status alone, a forum without the endpoint would look the same.
+                if e.code not in ("thread_not_found", "thread_merged"):
                     raise
                 continue
             posts = judge.floors_within(

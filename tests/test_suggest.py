@@ -1,11 +1,14 @@
 import asyncio
 
+import httpx
+import pytest
 from conftest import BOT, GROUP, Script, defaults, embed, message
 
 from mousehole import judge, suggest
+from mousehole.forum import Forum, ForumError
 from mousehole.similar import Index
 from mousehole.suggest import Suggest
-from tools.fake_forum import FakeForum
+from tools.fake_forum import FakeForum, error
 
 ASKER, ANSWERER, OTHER = 10001, 10002, 10003
 
@@ -119,6 +122,20 @@ async def test_without_candidates_the_llm_is_not_asked():
     s.add(GROUP, message(1, ASKER, "预推免第一批和第二批可以都报吗？"), BOT)
     await s.round()
     assert sent == []
+
+
+async def test_a_forum_without_the_source_endpoint_fails_the_round_not_skips_the_thread():
+    s, _, forum = await suggest_with(Script(), ANSWERER)
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/source"):
+            return error(404, "not_found")
+        return forum.handle(request)
+
+    s.forum = Forum("http://forum.test", "token", httpx.MockTransport(handle))
+    s.add(GROUP, message(1, ASKER, "预推免第一批和第二批可以都报吗？"), BOT)
+    with pytest.raises(ForumError):
+        await s.round()
 
 
 async def test_the_llm_sees_the_question_after_what_was_said_just_before_and_the_floors():
