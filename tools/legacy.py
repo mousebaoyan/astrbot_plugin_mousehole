@@ -401,6 +401,10 @@ async def joined_of(forum: Forum, qqs: set[int]) -> dict[int, int | None]:
 
 
 async def main_async(args: argparse.Namespace) -> None:
+    out = Path(args.out)
+    if out.exists():
+        # Its messages' IDs, by their order, are what the forum knows them by once archived.
+        raise SystemExit(f"{out} is there already: archive from it, or write a new one elsewhere")
     paths = [Path(p) for p in args.exports]
     txt = read_txt(next(p for p in paths if p.suffix == ".txt"))
     html, shown = read_html(sorted(p for p in paths if p.suffix == ".html"))
@@ -415,7 +419,7 @@ async def main_async(args: argparse.Namespace) -> None:
     export, tally = convert_legacy(
         txt, html, shown, later, joined, int(info["peerUid"]), int(info["selfUin"])
     )
-    Path(args.out).write_text(json.dumps(export, ensure_ascii=False), encoding="utf-8")
+    out.write_text(json.dumps(export, ensure_ascii=False), encoding="utf-8")
     for key, n in sorted(tally.items()):
         print(f"{key}: {n}")
 

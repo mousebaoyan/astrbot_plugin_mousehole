@@ -31,6 +31,7 @@ from mousehole.archive import (
     until,
     worth,
 )
+from mousehole.files import write_file
 from mousehole.forum import Forum, ForumError, error_of
 from mousehole.llm import LLM, Embedder, Settings
 from mousehole.similar import Index
@@ -112,7 +113,7 @@ class Batch:
         return f"{self.group}-{int(self.messages[-1].time)}"
 
 
-@dataclass
+@dataclass(eq=False)
 class Run:
     """The batches from `start` to `end`, by their first messages, organized in order by one
     worker, which follows its threads from one into the next (design §8.10)."""
@@ -144,6 +145,8 @@ def nearest(work: list[Batch], points: list[float], goal: float) -> float | None
 
 def runs_of(work: list[Batch], count: int) -> list[Run]:
     """The work cut into `count` runs of about the same weight."""
+    if not work:
+        return []
     total = sum(b.weight for b in work)
     bounds = [work[0].start]
     for k in range(1, count):
@@ -159,11 +162,14 @@ def take_over(runs: list[Run], work: list[Batch], done: set[str]) -> Run | None:
     left, cut where runs may be, if that half weighs TAKE_OVER_LEAST at least."""
 
     def left(r: Run) -> list[Batch]:
-        return [b for b in work if r.at < b.start < r.end and b.name not in done]
+        """After the batch at hand and those taken in, one of which may be organized still."""
+        mine = [b for b in work if r.start <= b.start < r.end]
+        begun = max([r.at] + [b.start for b in mine if b.name in done])
+        return [b for b in mine if b.start > begun]
 
     run = max(runs, key=lambda r: sum(b.weight for b in left(r)))
     rest = left(run)
-    points = [c for c in cuts(rest) if c > max(run.at, run.start)]
+    points = [c for c in cuts(rest) if c > rest[0].start] if rest else []
     cut = nearest(rest, points, sum(b.weight for b in rest) / 2)
     if cut is None or sum(b.weight for b in rest if b.start >= cut) < TAKE_OVER_LEAST:
         return None
@@ -305,22 +311,33 @@ async def archive_exports(
         key=lambda b: b.start,
     )
 
+    # Batches taken in: written down as each is, or, were it stopped just then, left in its
+    # run's directory to be organized.
     done_file = data / "done.txt"
     done = set(done_file.read_text().split()) if done_file.exists() else set()
+    done.update(path.stem for path in data.glob("run-*/batch/*.jsonl"))
     segments_file = data / "segments.jsonl"
     runs_file = data / "runs.json"
     if runs_file.exists():
         runs = [Run(**r) for r in json.loads(runs_file.read_text())]
     else:
         runs = runs_of(work, workers)
+    outside = [b for b in work if not any(r.start <= b.start < r.end for r in runs)]
+    if outside:
+        raise SystemExit(f"{len(outside)} batches are in none of the runs of {runs_file}")
 
     def save_runs() -> None:
-        runs_file.write_text(json.dumps([{"start": r.start, "end": r.end} for r in runs]))
+        write_file(runs_file, json.dumps([{"start": r.start, "end": r.end} for r in runs]))
 
     save_runs()
+    for n, r in enumerate(runs):
+        log.info("Run %d: %s to %s", n, clock(r.start), clock(r.end))
 
-    def finished(r: Run) -> bool:
-        return all(b.name in done for b in work if r.start <= b.start < r.end)
+    def finished(n: int) -> bool:
+        """All its batches taken in, the last organized too."""
+        r = runs[n]
+        taken = all(b.name in done for b in work if r.start <= b.start < r.end)
+        return taken and not any((data / f"run-{n}" / "batch").glob("*.jsonl"))
 
     async def nothing(group: int, segments: list[dict]) -> None:
         pass
@@ -348,11 +365,10 @@ async def archive_exports(
         # A batch stopped halfway goes on; one stopped while being taken in is taken in again.
         for path in archive.pending.glob("*.jsonl"):
             path.unlink()
-        done.update(path.stem for path in archive.batches.glob("*.jsonl"))
 
         def report(r: dict) -> None:
             with segments_file.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+                f.write(json.dumps(r | {"run": n}, ensure_ascii=False) + "\n")
             posted = sum(not d.startswith("tag ") for d in r["done"])
             print(
                 f"run {n} group {r['group']} {clock(r['times'][0])}: "
@@ -379,6 +395,7 @@ async def archive_exports(
             archive.start_round(everything=True)
             with done_file.open("a") as f:
                 f.write(b.name + "\n")
+            done.add(b.name)
             taken += 1
             await patiently(go_on)
         return taken
@@ -386,14 +403,19 @@ async def archive_exports(
     async def worker() -> None:
         taken = 0
         while most is None or taken < most:
-            run = next((r for r in runs if not r.taken and not finished(r)), None)
-            if run is None and (run := take_over(runs, work, done)) is not None:
-                log.info("Run %d taken over from %s", len(runs) - 1, clock(run.start))
-            if run is None:
-                return
-            run.taken = True
+            n = next((n for n, r in enumerate(runs) if not r.taken and not finished(n)), None)
+            if n is None:
+                if take_over(runs, work, done) is None:
+                    return
+                n = len(runs) - 1
+                log.info(
+                    "Run %d: %s to %s, taken over", n, clock(runs[n].start), clock(runs[n].end)
+                )
+            runs[n].taken = True
             save_runs()
-            taken += await organize(runs.index(run), run, None if most is None else most - taken)
+            taken += await organize(n, runs[n], None if most is None else most - taken)
+            if finished(n):
+                log.info("Run %d: done", n)
 
     await asyncio.gather(*(worker() for _ in range(workers)))
 

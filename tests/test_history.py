@@ -3,6 +3,7 @@ import json
 from datetime import datetime
 from itertools import pairwise
 
+import pytest
 from conftest import GROUP, Script, embed
 
 from mousehole.archive import Message, Tuning
@@ -140,7 +141,11 @@ def test_a_worker_done_takes_over_the_later_half_of_what_is_left_of_the_longest_
     assert take_over(runs[:1], work, done) is None
 
 
-async def test_runs_taken_over_take_each_batch_once_and_go_on_from_where_they_were(
+class Crash(BaseException):
+    """The tool stopped, as by Ctrl-C."""
+
+
+async def test_runs_taken_over_take_each_batch_once_and_go_on_where_they_were_stopped(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(history, "TAKE_OVER_LEAST", 1)
@@ -155,18 +160,65 @@ async def test_runs_taken_over_take_each_batch_once_and_go_on_from_where_they_we
     path.write_text(json.dumps({"chatInfo": info, "messages": messages}), encoding="utf-8")
     forum = FakeForum()
     client = forum.client()
+    data = tmp_path / "data"
 
-    async def nothing(system, prompt, schema):
+    def runs():
+        return json.loads((data / "runs.json").read_text())
+
+    async def stopping(system, prompt, schema):
         await asyncio.sleep(0.05 if "慢" in prompt else 0)
+        # Stopped once a run was taken over, in the middle of a batch.
+        if len(runs()) > 2 and "慢" in prompt:
+            raise Crash
         return json.dumps(NOTHING), 1000, 100
 
-    data = tmp_path / "data"
+    async def nothing(system, prompt, schema):
+        return json.dumps(NOTHING), 1000, 100
+
+    with pytest.raises(Crash):
+        await archive_exports(
+            client, stopping, Index(client, embed, "test", None), [path], data, Tuning(), 2
+        )
     await archive_exports(
         client, nothing, Index(client, embed, "test", None), [path], data, Tuning(), 2
     )
     done = (data / "done.txt").read_text().split()
-    runs = json.loads((data / "runs.json").read_text())
     assert (len(done), len(set(done))) == (8, 8)
-    assert len(runs) > 2
-    bounds = sorted((r["start"], r["end"]) for r in runs)
-    assert all(a[1] == b[0] for a, b in pairwise(bounds))
+    # Each batch, one segment here, organized once.
+    lines = (data / "segments.jsonl").read_text().splitlines()
+    organized = [json.loads(line)["times"][0] for line in lines]
+    assert sorted(organized) == days
+    bounds = sorted((r["start"], r["end"]) for r in runs())
+    assert len(bounds) > 2 and all(a[1] == b[0] for a, b in pairwise(bounds))
+
+
+async def test_a_last_batch_stopped_while_organized_is_organized_when_run_again(tmp_path):
+    forum = FakeForum()
+    client = forum.client()
+    path, data = export(tmp_path), tmp_path / "data"
+
+    async def run(llm):
+        index = Index(client, embed, "test", None)
+        await archive_exports(client, llm, index, [path], data, Tuning(), 1, until=EVENING)
+
+    async def stopped(system, prompt, schema):
+        raise Crash
+
+    with pytest.raises(Crash):
+        await run(stopped)
+    # Its only batch is taken in, but not organized yet.
+    assert len((data / "done.txt").read_text().split()) == 1
+    await run(Script({"new": [QUESTION, ANSWER], "edit": []}))
+    assert len(forum.threads) == 1
+
+
+async def test_batches_in_none_of_the_runs_written_down_are_not_left_out_unsaid(tmp_path):
+    forum = FakeForum()
+    client = forum.client()
+    path, data = export(tmp_path), tmp_path / "data"
+    data.mkdir()
+    (data / "runs.json").write_text(json.dumps([{"start": 0, "end": MORNING}]))
+    with pytest.raises(SystemExit):
+        await archive_exports(
+            client, Script(), Index(client, embed, "test", None), [path], data, Tuning(), 1
+        )
