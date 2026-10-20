@@ -31,6 +31,8 @@ FREE_BOARD = {
 # ECNU's credits per million tokens of ecnu-plus, doubled from 8 to 18 o'clock.
 CREDITS_IN, CREDITS_CACHED, CREDITS_OUT = 100, 20, 400
 DEARER_HOURS = range(8, 18)
+# And of each call of ecnu-rerank.
+CREDITS_RERANK = 0.05
 SITE = "https://bbs.mousebaoyan.cn"
 
 CATEGORIZE = """给论坛上的这个帖子（提问或讨论）写一个类别和几个标签，用来设计论坛的版块和标签。
@@ -101,7 +103,7 @@ def credits(input_tokens: int, output_tokens: int, hour: int, cached: int = 0) -
 
 
 class Cached(httpx.AsyncBaseTransport):
-    """The LLM's answers kept by the whole request, shared by all runs: a run stopped halfway and
+    """The LLM's and the reranker's answers kept by the whole request, shared by all runs: a run stopped halfway and
     started again, or a longer one over the same start, pays only for the calls not made before.
     `spent` is what the calls not found here cost."""
 
@@ -125,15 +127,18 @@ class Cached(httpx.AsyncBaseTransport):
             content = await res.aread()
             if res.status_code != 200:
                 return httpx.Response(res.status_code, content=content)
-            _, usage, finish = await read(httpx.Response(200, content=content))
-            if usage:
-                cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
-                hour = datetime.now().hour
-                prompt, completion = usage["prompt_tokens"], usage["completion_tokens"]
-                self.spent += credits(prompt, completion, hour, cached)
-            if finish is None:
-                # Broken off: asked again, not kept.
-                return httpx.Response(200, content=content)
+            if request.url.path.endswith("/rerank"):
+                self.spent += CREDITS_RERANK
+            else:
+                _, usage, finish = await read(httpx.Response(200, content=content))
+                if usage:
+                    cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
+                    hour = datetime.now().hour
+                    prompt, completion = usage["prompt_tokens"], usage["completion_tokens"]
+                    self.spent += credits(prompt, completion, hour, cached)
+                if finish is None:
+                    # Broken off: asked again, not kept.
+                    return httpx.Response(200, content=content)
             self.answers[key] = content.decode()
             line = json.dumps({"request": key, "response": self.answers[key]}) + "\n"
             # One write, so runs going at once don't mix their lines.

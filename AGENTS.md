@@ -10,6 +10,7 @@
 | 防风控：bot 能调哪些 QQ 接口、能发哪些消息 | 设计第 2 节 |
 | 自动收录 | 设计第 8 节 |
 | 用历史群消息调自动收录 | [回放实验](docs/replay.md) |
+| 调猜你想问 | 设计第 8.11 节，回放实验第 8 节 |
 | 论坛的接口：请求、错误码、成员同步、事件流 | 鼠洞仓库的[接口](https://github.com/mousebaoyan/mousehole/blob/main/docs/api.md)，以它为准 |
 | AstrBot、NapCat 的用法 | 它们的官方文档和源码，按设计第 3 节的版本核对 |
 
@@ -25,6 +26,7 @@
 | `uv run python -m tools.replay …` | 回放历史群消息，见[回放实验](docs/replay.md) |
 | `uv run python -m tools.history …` | 把导出的历史群消息收录到论坛，见设计第 8.10 节 |
 | `uv run python -m tools.boards …` | 在论坛上建收录用的版块和标签（设计第 8.9 节） |
+| `uv run python -m tools.suggest …` | 在标注好的提问上评猜你想问，见回放实验第 8 节 |
 | `uv run python -m tools.duplicates …` | 列出论坛上很像的帖子，人工确认后合并（设计第 8.10 节） |
 
 ## 语言
