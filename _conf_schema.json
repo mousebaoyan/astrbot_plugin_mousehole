@@ -461,6 +461,12 @@
         "type": "string",
         "default": "ecnu-plus"
       },
+      "rerank_model": {
+        "description": "rerank 模型",
+        "type": "string",
+        "default": "ecnu-rerank",
+        "hint": "猜你想问用它给候选帖子打分，走上面的接口地址和 API Key（POST /rerank，Cohere 的格式）。ECNU 每次 0.05 积分。"
+      },
       "structured_output": {
         "description": "结构化输出",
         "type": "string",

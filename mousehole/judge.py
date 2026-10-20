@@ -279,86 +279,110 @@ def duplicate_prompt(title: str, body: str, candidates: list[dict]) -> str:
 # ---- 猜你想问 (design §8.11)
 
 SUGGEST_THREADS = 3
-# Of each candidate's floors: as of a thread summarized, but fewer, for a round may have a few
-# questions with a few candidates each.
+# Of each candidate's floors: as of a thread summarized, but fewer, for a question may have a few
+# candidates.
 SUGGEST_FLOOR_CHARS = 500
 SUGGEST_CHARS = 3000
 
-# Writing first what the asker wants to know, in their own terms, keeps the LLM from taking an
-# exclamation for a question, or a question for a broader one a thread answers.
-SUGGEST = f"""你在帮一个保研交流 QQ 群。群友在群里提了问题，bot 想把论坛上以前有人问过、也有人答过的帖子推给提问的人。推错了会打扰大家，所以只推有把握的。
+# First, from the messages alone, whether the last one asks anything and what: shown the threads
+# as well, the LLM would take a subject from them for a question that has none of its own.
+SUGGEST_ASKS = """你在帮一个保研交流 QQ 群。下面是群里的几条消息，最后一条可能是在提问。"↩群友1"表示回复的是群友1的消息。
 
-每个问题先列出群里提问前的几条消息，最后一条是提问，"↩群友1"表示回复的是群友1的消息；下面是论坛上找到的、可能相关的帖子和它们的楼层，标出了楼主、被采纳的回答和赞数。
+bot 会把论坛上以前的问答推给提问的人。判断最后一条是不是这样的提问：提问人真想知道答案，而且换一个不在场、不认识群里这些人的过来人，只看这个问题也能回答。是的话，用一句话写出提问人想知道什么（asks），照原意写，补上前文里的主语，不要往大了概括，也不要加上没问的。
 
-对每个问题，先结合前面的消息，用一句话写出提问人想知道什么（asks）。照他的原意写，补上前文里的主语就行，不要往大了概括，也不要替他加上没问的（比如"@群友1 他怎么还没联系我"不能写成"导师一般多久联系学生"）：
-- 玩笑、吐槽、感叹；说自己的情况或看法、没有在等别人回答（句末带"吗""呢""啊"也可能只是感叹，比如"这也太卷了吧""谁想到今年这么难呢""找实习好难啊"）；问的是对方或前文里具体的人和事（比如"你们组每周都开会吗""他后来去哪了"）；只是顺着别人的话接一句、离开前文就看不出在问什么：asks 写"不是在问"，不选帖子。
-- @了某人或者回复某人，问的却是一般的事（比如"@群友1 夏令营一般几月报名"）；用反问的语气、其实想知道答案的（比如"不是说今年名额少吗，怎么还在补录"）：算在问。
+不算：
+- 玩笑、吐槽、感叹、抬杠；用反问附和或反驳别人（别人说"这个比赛要凉了"，回"不是早就凉了吗"）。
+- 接龙、复读：前面几个人在轮流发差不多的话或者同一个句式，最后一条跟着发。
+- 问群里具体的人：他的情况、经历、去向、打算、看法（"群友3什么时候去实习""xx神有什么建议""你们组开组会吗""xmu什么院的""有人去西工大吗"）。
+- 只有在场的人答得了的追问：问图片、链接、前文里那件具体的事、那个人、那个数（"这个分数如何""一个月发多少""那他为啥不保研""25就进组了吗"）。
+- 前文看不出问的是什么事。
 
-再逐个看帖子，选出能解答 asks 的：
-- 能：帖子问的是同一件事，说法、角度稍有不同没关系；楼层里的回答能解答 asks，不是只有闲聊、反问、跟着问或者"不知道"。
-- 不能：只是话题相近、关键词一样，问的却是另一件事（比如一个问"夏令营要不要准备机试"，一个问"预推免考不考机试"）；asks 问的是自己的具体情况（比如"我这个条件能去哪"），帖子说的是别人的；问的是今年的事，帖子说的是往年的。
-- 拿不准时当作不能。每个问题最多选 {SUGGEST_THREADS} 个，有被采纳的回答的优先，再按回答得好坏排。
+算：@了某人或者回复某人，问的却是一般的事（"@群友1 夏令营一般几月报名"）；接着别人的话、但问的是一般的事（"但是今年真的还有转正岗位吗"）；问自己的具体情况、而且说清了情况（"rk1加一篇ccf-b能去哪"）；用反问的语气、其实想知道答案的（"不是说今年名额少吗，怎么还在补录"）。
 
-只输出一个 JSON 对象，每个问题一项：{{"answers": [{{"question": "Q1", "asks": "……", "threads": ["C2"]}}]}}，没有能解答的 threads 就是 []。"""
+只输出一个 JSON 对象：{"asking": true, "asks": "……"}；不是时 {"asking": false, "asks": ""}。"""
 
-SUGGEST_SCHEMA = {
-    "name": "suggestions",
+SUGGEST_ASKS_SCHEMA = {
+    "name": "asks",
+    "schema": {
+        "type": "object",
+        "properties": {"asking": {"type": "boolean"}, "asks": {"type": "string"}},
+        "required": ["asking", "asks"],
+        "additionalProperties": False,
+    },
+}
+
+# Then each candidate on its own: asked which of them answer it, the LLM turned down good ones
+# whenever it was unsure of any. Naming the floor that answers keeps it to threads that do.
+SUGGEST_MATCH = """你在帮一个保研交流 QQ 群。群友在群里问了一个问题，bot 想把论坛上以前有人问过、也有人答过的帖子推给他，让他点进去看。
+
+下面先给出提问人想知道什么（asks）和他的原话，再给出论坛上找到的帖子和它们的楼层，标出了楼主、被采纳的回答和赞数。
+
+对每个帖子判断两件事：
+1. same：帖子问的和 asks 是不是同一个问题。说法、角度不同，帖子问得宽一点或窄一点，都没关系，只要提问人看到帖子标题会觉得"这就是我想问的"。只是话题相近、关键词一样，问的却是另一件事（比如一个问"夏令营要不要准备机试"，一个问"预推免考不考机试"），不算；asks 里有具体的学校、年份、条件，帖子说的是别的，不算。
+2. floor：从 #2 起，回答了这个问题的第一层的楼层号（#1 是楼主在提问，不算），回答短也算（比如"直接说不会就行"）。没有一层在回答，只有提问、反问、跟着问、闲聊、"不知道"的，填 0。
+
+只输出一个 JSON 对象，每个帖子一项：{"threads": [{"thread": "C1", "same": true, "floor": 2}]}。"""
+
+SUGGEST_MATCH_SCHEMA = {
+    "name": "match",
     "schema": {
         "type": "object",
         "properties": {
-            "answers": {
+            "threads": {
                 "type": "array",
                 "items": {
                     "type": "object",
                     "properties": {
-                        "question": {"type": "string"},
-                        "asks": {"type": "string"},
-                        "threads": {"type": "array", "items": {"type": "string"}},
+                        "thread": {"type": "string"},
+                        "same": {"type": "boolean"},
+                        "floor": {"type": "integer"},
                     },
-                    "required": ["question", "asks", "threads"],
+                    "required": ["thread", "same", "floor"],
                     "additionalProperties": False,
                 },
             }
         },
-        "required": ["answers"],
+        "required": ["threads"],
         "additionalProperties": False,
     },
 }
 
 
-def suggest_prompt(asked: list[tuple[list[str], list[dict]]]) -> str:
-    """Each question, after the messages before it, with the threads found for it: what the
-    forum gives to summarize one (`source`), and the floors of it shown (`posts`)."""
-    parts = []
-    for i, (lines, threads) in enumerate(asked, 1):
-        blocks = [f"# Q{i}\n" + "\n".join(lines)]
-        for j, t in enumerate(threads, 1):
-            s = t["source"]["thread"]
-            head = f"C{j}. {s['title']}（{s['board']}，{kind_of(s)}，{t['created']}，"
-            head += f"{t['source']['replies']} 条回复）"
-            blocks.append("\n".join([head, *(floor_line(p) for p in t["posts"])]))
-        parts.append("\n\n".join(blocks))
-    return "\n\n".join(parts)
+def asks_of(raw: Any) -> str:
+    """What the asker wants to know, by the LLM's answer to `SUGGEST_ASKS`; "" when nothing."""
+    if not isinstance(raw, dict) or raw.get("asking") is not True:
+        return ""
+    asks = raw.get("asks")
+    return asks.strip() if isinstance(asks, str) else ""
 
 
-def suggestions(raw: Any, counts: list[int]) -> dict[int, list[int]]:
-    """For each question by index, the indexes of the threads the LLM found answer it; `counts`
-    is how many threads each question had."""
-    picked: dict[int, list[int]] = {}
-    items = raw.get("answers") if isinstance(raw, dict) else None
+def match_prompt(asks: str, lines: list[str], threads: list[dict]) -> str:
+    """What the asker wants to know and their words, with the threads found: what the forum
+    gives to summarize each (`source`), and the floors of it shown (`posts`)."""
+    said = lines[-1].split("：", 1)[-1]
+    blocks = [f"asks：{asks}\n原话：{said}"]
+    for j, t in enumerate(threads, 1):
+        s = t["source"]["thread"]
+        head = f"C{j}. {s['title']}（{s['board']}，{kind_of(s)}，{t['created']}，"
+        head += f"{t['source']['replies']} 条回复）"
+        blocks.append("\n".join([head, *(floor_line(p) for p in t["posts"])]))
+    return "\n\n".join(blocks)
+
+
+def matches(raw: Any, threads: list[dict]) -> list[int]:
+    """The indexes of the threads the LLM found ask the same and named a floor of, after the
+    opening one, that answers it; in its order."""
+    picked: list[int] = []
+    items = raw.get("threads") if isinstance(raw, dict) else None
     for item in items if isinstance(items, list) else []:
-        if not isinstance(item, dict):
+        if not isinstance(item, dict) or item.get("same") is not True:
             continue
-        q = number_of(item.get("question"), "Q", len(counts))
-        if q is None:
+        t = number_of(item.get("thread"), "C", len(threads))
+        if t is None or t in picked:
             continue
-        threads: list[int] = []
-        for c in item.get("threads") or []:
-            t = number_of(c, "C", counts[q])
-            if t is not None and t not in threads:
-                threads.append(t)
-        picked[q] = threads[:SUGGEST_THREADS]
-    return picked
+        if item.get("floor") in {p["floor"] for p in threads[t]["posts"] if p["floor"] > 1}:
+            picked.append(t)
+    return picked[:SUGGEST_THREADS]
 
 
 def number_of(name: Any, prefix: str, count: int) -> int | None:

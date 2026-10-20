@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import Coroutine
+from functools import partial
 from typing import Any
 
 import httpx
@@ -15,7 +16,7 @@ from .mousehole.bounties import Bounties
 from .mousehole.cards import Cards
 from .mousehole.events import Events
 from .mousehole.forum import Forum, ForumError
-from .mousehole.llm import LLM, Embedder, Settings
+from .mousehole.llm import LLM, Embedder, Reranker, Settings
 from .mousehole.login import login, wants_login
 from .mousehole.polls import Polls
 from .mousehole.qq import QQ, fill
@@ -40,6 +41,7 @@ class Mousehole(Star):
         self.llm: LLM | None = None
         self.summary_llm: LLM | None = None
         self.embedder: Embedder | None = None
+        self.reranker: Reranker | None = None
         self.archive: Archive | None = None
         self.suggest: Suggest | None = None
         self.summaries: Summaries | None = None
@@ -84,9 +86,12 @@ class Mousehole(Star):
                 tuning=Tuning.of(c),
             )
             if c["archive"]["suggest"]:
+                self.reranker = Reranker(m["base_url"], m["api_key"], m["rerank_model"])
                 self.suggest = Suggest(
                     self.forum,
-                    self.llm.complete,
+                    # Without thinking: on the replays as good, in a fifth of the time.
+                    partial(self.llm.complete, think=False),
+                    self.reranker.rerank,
                     index,
                     self.qq.send_group,
                     site=c["forum_url"],
@@ -259,7 +264,7 @@ class Mousehole(Star):
         for task in self.tasks:
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
-        for client in (self.forum, self.llm, self.summary_llm, self.embedder):
+        for client in (self.forum, self.llm, self.summary_llm, self.embedder, self.reranker):
             if client:
                 await client.close()
 

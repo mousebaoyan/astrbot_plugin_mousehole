@@ -10,12 +10,16 @@ import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 from datetime import datetime
+from typing import Any
 
 from . import judge
 from .archive import Complete, Message, Notify, plain, shown_text, shows
 from .forum import Forum, ForumError
 from .qq import fill, joined
 from .similar import Index
+
+# (query, documents): each document's score
+Rerank = Callable[[str, list[str]], Awaitable[list[float]]]
 
 log = logging.getLogger("astrbot.plugin.astrbot_plugin_mousehole")
 
@@ -27,16 +31,18 @@ QUESTION_WORDS = (
 MIN_CHARS = 6
 # Asked of someone (你, not 你们): between people, which no thread answers.
 OF_SOMEONE = re.compile("你(?!们)")
-# Candidates for a question, by meaning alone: the literal search would bring in most of the
-# chatter. Of the threads this alike, the NEAREST are looked at in turn for the first CANDIDATES
-# that may answer it. On 1415 questions of five days against 992 threads with replies, 41 of them
-# answered by one: 0.7 finds 19 of those, with 23 questions a day going to the LLM; 0.64 finds 31,
-# with 70 a day, but on those from 0.64 to 0.7 the LLM was wrong 11 times and right 5. Searching by
-# title alone, with more of the opening or the first reply, with the messages before the question,
-# or with thresholds relative to the question found no more for as many calls.
-SIMILARITY = 0.7
+# Candidates for a question: by meaning alone, as the literal search would bring in most of the
+# chatter, the NEAREST threads at least SIMILARITY alike; then the reranker scores the question
+# against each one's title and the start of its floors, which tells a thread on the same question
+# from one on the same topic far better, and the first CANDIDATES scoring at least RERANKED go to
+# the LLM. Of 48 questions in 11 days a thread answers, the vector alone at 0.7 leaves 18 to the
+# LLM, with 27 to 32 questions a day going to it; 0.6 and then 0.3 leaves 43, with 56 to 63.
+SIMILARITY = 0.6
 NEAREST = 10
+RERANKED = 0.3
 CANDIDATES = 3
+RERANK_FLOOR_CHARS = 200
+RERANK_CHARS = 1000
 # A question goes to the LLM after the BEFORE messages that say anything, said at most
 # BEFORE_SECONDS before it, and the one it quotes among the KEPT last of the group: whether it
 # asks anything, and what, shows there.
@@ -69,6 +75,7 @@ class Suggest:
         self,
         forum: Forum,
         complete: Complete,
+        rerank: Rerank,
         index: Index,
         notify: Notify,
         *,
@@ -80,6 +87,7 @@ class Suggest:
     ):
         self.forum = forum
         self.complete = complete
+        self.rerank = rerank
         self.index = index
         self.notify = notify
         self.site = site.rstrip("/")
@@ -131,7 +139,13 @@ class Suggest:
                     continue
                 if found := await self.threads_for(group, m):
                     asked.append((group, m, lines, found))
-        told, tokens = await self.tell(asked, now) if asked else (0, 0)
+        told = tokens = 0
+        for group, m, lines, found in asked:
+            threads, input_tokens, output_tokens = await pick(
+                self.complete, self.rerank, lines, text_of(m), found
+            )
+            tokens += input_tokens + output_tokens
+            told += await self.tell(group, m, threads, now)
         if waiting:
             # In numbers only: the questions are the members' words.
             log.info(
@@ -142,36 +156,18 @@ class Suggest:
                 tokens,
             )
 
-    async def tell(
-        self, asked: list[tuple[int, Message, list[str], list[dict]]], now: float
-    ) -> tuple[int, int]:
-        """The questions the LLM finds threads answer get them; how many did, and the tokens
-        the LLM took."""
-        prompt = judge.suggest_prompt([(lines, found) for _, _, lines, found in asked])
-        answer, input_tokens, output_tokens = await self.complete(
-            judge.SUGGEST, prompt, judge.SUGGEST_SCHEMA
-        )
-        tokens = input_tokens + output_tokens
-        try:
-            raw = judge.extract_json(answer)
-        except ValueError:
-            log.warning("The LLM's answer for 猜你想问 is not JSON")
-            return 0, tokens
-        picked = judge.suggestions(raw, [len(found) for _, _, _, found in asked])
-        told = 0
-        for i, (group, m, _, found) in enumerate(asked):
-            threads = [
-                found[t] for t in picked.get(i, []) if (group, found[t]["id"]) not in self.told
-            ]
-            replied = self.replied.setdefault(group, [])
-            if not threads or len(replied) == REPLIES:
-                continue
-            await self.notify(group, suggestion(m, threads, self.site, self.templates))
-            replied.append(now)
-            told += 1
-            for t in threads:
-                self.told[group, t["id"]] = now
-        return told, tokens
+    async def tell(self, group: int, m: Message, threads: list[dict], now: float) -> bool:
+        """The threads not told lately get to the asker, unless the group was replied to enough
+        lately; whether they did."""
+        threads = [t for t in threads if (group, t["id"]) not in self.told]
+        replied = self.replied.setdefault(group, [])
+        if not threads or len(replied) == REPLIES:
+            return False
+        await self.notify(group, suggestion(m, threads, self.site, self.templates))
+        replied.append(now)
+        for t in threads:
+            self.told[group, t["id"]] = now
+        return True
 
     async def threads_for(self, group: int, m: Message) -> list[dict]:
         """The threads that may answer it, the most alike first: with replies, not the asker's
@@ -204,8 +200,6 @@ class Suggest:
                     "posts": posts,
                 }
             )
-            if len(found) == CANDIDATES:
-                break
         return found
 
     async def user(self, qq: int) -> int | None:
@@ -217,6 +211,45 @@ class Suggest:
                     raise
                 self.users[qq] = None
         return self.users[qq]
+
+
+async def pick(
+    complete: Complete, rerank: Rerank, lines: list[str], text: str, found: list[dict]
+) -> tuple[list[dict], int, int]:
+    """The threads of those found that answer the question, the best first, and the input and
+    output tokens the LLM took. Those the reranker scores best go to the LLM, which says first,
+    from the messages alone, what is asked, and then which of them answer that."""
+    scores = await rerank(text, [rerank_text(t) for t in found])
+    ranked = sorted(range(len(found)), key=lambda i: -scores[i])
+    candidates = [found[i] for i in ranked if scores[i] >= RERANKED][:CANDIDATES]
+    if not candidates:
+        return [], 0, 0
+    answer, input_tokens, output_tokens = await complete(
+        judge.SUGGEST_ASKS, "\n".join(lines), judge.SUGGEST_ASKS_SCHEMA
+    )
+    asks = judge.asks_of(parsed(answer))
+    if not asks:
+        return [], input_tokens, output_tokens
+    answer, more_input, more_output = await complete(
+        judge.SUGGEST_MATCH,
+        judge.match_prompt(asks, lines, candidates),
+        judge.SUGGEST_MATCH_SCHEMA,
+    )
+    picked = judge.matches(parsed(answer), candidates)
+    return [candidates[t] for t in picked], input_tokens + more_input, output_tokens + more_output
+
+
+def parsed(answer: str) -> Any:
+    try:
+        return judge.extract_json(answer)
+    except ValueError:
+        log.warning("The LLM's answer for 猜你想问 is not JSON")
+        return None
+
+
+def rerank_text(thread: dict) -> str:
+    floors = (p["text"][:RERANK_FLOOR_CHARS] for p in thread["source"]["posts"])
+    return "\n".join([thread["title"], *floors])[:RERANK_CHARS]
 
 
 def text_of(m: Message) -> str:

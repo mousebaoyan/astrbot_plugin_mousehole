@@ -120,7 +120,7 @@ flowchart LR
 | `lottery`、`weekly`、`badges`、`bounty`、`polls` | 开 | 开奖结果、周榜、金徽章、悬赏、新投票发到群里；`groups` 空的，开奖结果发到主群，其余发到论坛关联的所有群 |
 | `answers`、`welcome`、`cards` | 开 | 新回答提醒、入群欢迎、链接卡片；`welcome.groups` 空的是论坛关联的所有群 |
 | `archive.enabled` | 关 | 自动收录；`archive.notify` 控制要不要在群里发收录汇总 |
-| `llm`、`embedding` | ECNU、本机 Ollama | 收录用的大模型和嵌入模型，OpenAI 兼容接口；`llm.tokens_per_day` 限制每天用的 token |
+| `llm`、`embedding` | ECNU、本机 Ollama | 收录和猜你想问用的大模型（猜你想问还用 `llm.rerank_model` 给候选打分）和嵌入模型，OpenAI 兼容接口；`llm.tokens_per_day` 限制每天用的 token |
 | `summary` | 开 | AI 总结，用自己的大模型和每天的 token 上限 |
 
 bot 发的话都有模板，在配置里改。全部配置项和话术模板见[设计第 4 节](docs/design.md#4-配置)和[第 9 节](docs/design.md#9-通知)。

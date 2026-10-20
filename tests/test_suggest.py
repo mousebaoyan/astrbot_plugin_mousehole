@@ -13,8 +13,13 @@ from tools.fake_forum import FakeForum, error
 ASKER, ANSWERER, OTHER = 10001, 10002, 10003
 
 
-async def suggest_with(llm, *threads_by):
-    """Suggest over a forum with a thread with a reply by each of `threads_by`, and the fake
+ASKS = {"asking": True, "asks": "预推免的第一批和第二批能不能都报"}
+MATCH = {"threads": [{"thread": "C1", "same": True, "floor": 2}]}
+
+
+async def suggest_with(llm, *threads_by, scores=None):
+    """Suggest over a forum with a thread with a reply by each of `threads_by`, the reranker
+    scoring the threads found `scores` in their order, 0.9 each by default; and the fake
     forum."""
     forum = FakeForum()
     client = forum.client()
@@ -40,9 +45,13 @@ async def suggest_with(llm, *threads_by):
     async def notify(group, segments):
         sent.append((group, segments))
 
+    async def rerank(query, documents):
+        return scores or [0.9] * len(documents)
+
     s = Suggest(
         client,
         llm,
+        rerank,
         index,
         notify,
         site="https://forum.test",
@@ -53,7 +62,7 @@ async def suggest_with(llm, *threads_by):
 
 
 async def test_a_question_a_thread_answers_gets_it_at_once_and_not_again_soon():
-    llm = Script({"answers": [{"question": "Q1", "threads": ["C1"]}]})
+    llm = Script(ASKS, MATCH)
     s, sent, _ = await suggest_with(llm, ANSWERER)
     s.add(GROUP, message(1, ASKER, "预推免第一批和第二批可以都报吗？"), BOT)
     s.add(GROUP, message(2, OTHER, "哈哈哈哈哈哈"), BOT)
@@ -65,15 +74,15 @@ async def test_a_question_a_thread_answers_gets_it_at_once_and_not_again_soon():
         "猜你想问：\n1. 预推免的第一批和第二批能都报吗\nhttps://forum.test/t/1"
     )
     # Asked only about the question; told already, the thread is no candidate for a while.
-    [(system, prompt)] = llm.prompts
-    assert system == judge.SUGGEST and "哈哈" not in prompt
+    [(asks, _), (match, prompt)] = llm.prompts
+    assert (asks, match) == (judge.SUGGEST_ASKS, judge.SUGGEST_MATCH) and "哈哈" not in prompt
     s.add(GROUP, message(4, OTHER, "预推免两批能一起报吗？"), BOT)
     await s.round()
     assert len(sent) == 1
 
 
 async def test_a_question_brings_a_round_a_minute_later():
-    llm = Script({"answers": [{"question": "Q1", "threads": ["C1"]}]})
+    llm = Script(ASKS, MATCH)
     s, sent, _ = await suggest_with(llm, ANSWERER)
     waited = []
 
@@ -95,8 +104,7 @@ async def test_a_question_brings_a_round_a_minute_later():
 
 
 async def test_a_group_gets_two_replies_in_any_ten_minutes_at_most():
-    answer = {"answers": [{"question": "Q1", "threads": ["C1"]}]}
-    s, sent, _ = await suggest_with(Script(*[answer] * 4), ANSWERER, OTHER, 10004, 10005)
+    s, sent, _ = await suggest_with(Script(*[ASKS, MATCH] * 4), ANSWERER, OTHER, 10004, 10005)
     now = 1_791_600_000.0
     s.clock = lambda: now
     # Rounds 4 minutes apart: the third has two replies in the 10 minutes before it.
@@ -138,8 +146,8 @@ async def test_a_forum_without_the_source_endpoint_fails_the_round_not_skips_the
         await s.round()
 
 
-async def test_the_llm_sees_the_question_after_what_was_said_just_before_and_the_floors():
-    llm = Script({"answers": []})
+async def test_the_llm_sees_the_question_after_what_was_said_just_before_and_then_the_floors():
+    llm = Script(ASKS, {"threads": []})
     s, _, forum = await suggest_with(llm, ANSWERER)
     forum.threads[1].posts[1].accepted = True
     # A message's ID is its second: 1 is quoted but long before, 50 only long before.
@@ -154,22 +162,55 @@ async def test_the_llm_sees_the_question_after_what_was_said_just_before_and_the
     ]:
         s.add(GROUP, m, BOT)
     await s.round()
-    [(_, prompt)] = llm.prompts
-    question, thread = prompt.split("\n\n")
+    [(_, question), (_, prompt)] = llm.prompts
+    # What is asked is judged by the messages alone.
     assert question == (
-        "# Q1\n群友1：预推免报名开始了\n群友2：第一批明天截止\nbot：收到\n提问人：我还没报\n"
+        "群友1：预推免报名开始了\n群友2：第一批明天截止\nbot：收到\n提问人：我还没报\n"
         "提问人 ↩群友1：第一批和第二批可以都报吗？"
     )
+    asks, thread = prompt.split("\n\n")
+    assert asks == "asks：预推免的第一批和第二批能不能都报\n原话：第一批和第二批可以都报吗？"
     assert thread.startswith("C1. 预推免的第一批和第二批能都报吗（保研问答，问答帖，")
     assert thread.endswith("1 条回复）\n#1（楼主）：预推免能报两批吗\n#2（已采纳）：可以")
 
 
-def test_what_the_llm_picks_is_kept_only_for_questions_and_threads_there_are():
+async def test_the_reranker_picks_which_threads_go_to_the_llm_and_in_what_order():
+    llm = Script(ASKS, MATCH)
+    s, sent, forum = await suggest_with(llm, ANSWERER, OTHER, 10004, scores=[0.2, 0.8, 0.1])
+    s.add(GROUP, message(1, ASKER, "预推免第一批和第二批可以都报吗？"), BOT)
+    await s.round()
+    [_, (_, prompt)] = llm.prompts
+    assert "C1." in prompt and "C2." not in prompt
+    [(_, [_, text])] = sent
+    _, second, _ = forum.threads
+    assert text["data"]["text"].endswith(f"https://forum.test/t/{second}")
+
+
+async def test_threads_the_reranker_scores_low_or_a_question_asking_nothing_get_nothing():
+    # Script() has nothing to answer with: the LLM is not asked.
+    s, sent, _ = await suggest_with(Script(), ANSWERER, scores=[0.29])
+    s.add(GROUP, message(1, ASKER, "预推免第一批和第二批可以都报吗？"), BOT)
+    await s.round()
+    # Not asking: no threads are looked at.
+    llm = Script({"asking": False, "asks": ""})
+    s, _, _ = await suggest_with(llm, ANSWERER)
+    s.add(GROUP, message(1, ASKER, "预推免第一批和第二批可以都报吗？"), BOT)
+    await s.round()
+    assert sent == [] and len(llm.prompts) == 1
+
+
+def test_only_threads_asking_the_same_with_an_answering_floor_shown_are_picked():
+    threads = [{"posts": [{"floor": 1}, {"floor": 2}, {"floor": 5}]} for _ in range(2)]
     raw = {
-        "answers": [
-            {"question": "Q1", "threads": ["C2", "C2", "C9", "C1"]},
-            {"question": "Q7", "threads": ["C1"]},
-            {"question": "X", "threads": ["C1"]},
+        "threads": [
+            {"thread": "C2", "same": True, "floor": 1},
+            {"thread": "C2", "same": True, "floor": 3},
+            {"thread": "C1", "same": False, "floor": 2},
+            {"thread": "C9", "same": True, "floor": 2},
+            {"thread": "C2", "same": True, "floor": 5},
+            {"thread": "C2", "same": True, "floor": 2},
+            {"thread": "C1", "same": True, "floor": 2},
         ]
     }
-    assert judge.suggestions(raw, [2]) == {0: [1, 0]}
+    assert judge.matches(raw, threads) == [1, 0]
+    assert judge.matches({"asking": True}, threads) == []

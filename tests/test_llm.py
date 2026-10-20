@@ -10,6 +10,7 @@ from mousehole.llm import (
     RETRY_WAITS,
     BudgetExhausted,
     LLMError,
+    Reranker,
     Settings,
     Truncated,
     Unavailable,
@@ -89,6 +90,16 @@ async def test_requests_carry_the_chosen_options(change, expected, absent):
     assert (body["model"], body["max_tokens"], body["stream"]) == ("ecnu-plus", 32768, True)
 
 
+@pytest.mark.parametrize(("thinking", "sent_as"), [("enabled", "disabled"), ("omit", None)])
+async def test_a_call_without_thinking_turns_it_off_only_where_it_is_on(thinking, sent_as):
+    transport, sent = answering()
+    llm = LLM(Settings(**vars(ECNU) | {"thinking": thinking}), transport)
+    await llm.complete("系统", "提示", DUPLICATE_SCHEMA, think=False)
+    (body,) = sent
+    assert body.get("thinking", {}).get("type") == sent_as
+    assert "reasoning_effort" not in body and body["temperature"] == 0.2
+
+
 async def test_too_many_requests_at_once_wait_their_turn():
     transport, sent = answering(429, 429)
     slept = []
@@ -143,3 +154,19 @@ async def test_the_daily_limit_stops_calls_once_reached():
     with pytest.raises(BudgetExhausted):
         await llm.complete("系统", "提示")
     assert len(sent) == 2
+
+
+async def test_rerank_scores_come_back_in_the_documents_order():
+    sent = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        # By relevance, as the API sorts them.
+        results = [{"index": 2, "relevance_score": 0.9}, {"index": 0, "relevance_score": 0.2}]
+        return httpx.Response(200, json={"results": results + [{"index": 1, "relevance_score": 0}]})
+
+    reranker = Reranker(ECNU.base_url, "key", "ecnu-rerank", httpx.MockTransport(handle))
+    assert await reranker.rerank("问", ["a", "b", "c"]) == [0.2, 0.0, 0.9]
+    assert sent == [
+        {"model": "ecnu-rerank", "query": "问", "documents": ["a", "b", "c"], "top_n": 3}
+    ]

@@ -1,6 +1,6 @@
-"""The LLM and the embedding model, called over the OpenAI-compatible API directly rather than
-through AstrBot's providers, which drop per-request options such as the response format and
-thinking (design §3). Replay uses these same clients with the same settings."""
+"""The LLM, the embedding model and the reranker, called over the OpenAI-compatible API directly
+rather than through AstrBot's providers, which drop per-request options such as the response
+format and thinking (design §3). Replay uses these same clients with the same settings."""
 
 import asyncio
 import json
@@ -89,8 +89,11 @@ class LLM:
     async def close(self) -> None:
         await self.http.aclose()
 
-    def body(self, system: str, prompt: str, schema: dict[str, Any] | None) -> dict[str, Any]:
+    def body(
+        self, system: str, prompt: str, schema: dict[str, Any] | None, think: bool = True
+    ) -> dict[str, Any]:
         s = self.settings
+        thinking = "disabled" if not think and s.thinking == "enabled" else s.thinking
         body: dict[str, Any] = {
             "model": s.model,
             "messages": [
@@ -111,9 +114,9 @@ class LLM:
             }
         elif s.structured_output != "off":
             body["response_format"] = {"type": "json_object"}
-        if s.thinking != "omit":
-            body["thinking"] = {"type": s.thinking}
-        if s.thinking == "enabled":
+        if thinking != "omit":
+            body["thinking"] = {"type": thinking}
+        if thinking == "enabled":
             body["reasoning_effort"] = s.reasoning_effort
         else:
             # Sampling settings may not apply while thinking (ECNU's docs).
@@ -121,9 +124,15 @@ class LLM:
         return body
 
     async def complete(
-        self, system: str, prompt: str, schema: dict[str, Any] | None = None
+        self,
+        system: str,
+        prompt: str,
+        schema: dict[str, Any] | None = None,
+        *,
+        think: bool = True,
     ) -> tuple[str, int, int]:
-        """The answer and the input and output tokens it took."""
+        """The answer and the input and output tokens it took; without thinking, where the
+        settings have it, for `think=False`."""
         today = time.strftime("%Y-%m-%d")
         if today != self.day:
             log.info("LLM tokens on %s: %d", self.day, self.spent)
@@ -131,7 +140,7 @@ class LLM:
         limit = self.settings.tokens_per_day
         if limit and self.spent >= limit:
             raise BudgetExhausted(f"{self.spent} tokens today")
-        body = self.body(system, prompt, schema)
+        body = self.body(system, prompt, schema, think)
         busy = failures = 0
         while True:
             try:
@@ -204,3 +213,36 @@ class Embedder:
         if res.status_code != 200:
             raise LLMError(f"HTTP {res.status_code}: {res.text[:200]}")
         return [d["embedding"] for d in sorted(res.json()["data"], key=lambda d: d["index"])]
+
+
+class Reranker:
+    """Scores documents against a query, by the `/rerank` Cohere has and ECNU too."""
+
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        model: str,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ):
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        self.http = httpx.AsyncClient(
+            base_url=base_url.rstrip("/"), headers=headers, transport=transport, timeout=60
+        )
+        self.model = model
+
+    async def close(self) -> None:
+        await self.http.aclose()
+
+    async def rerank(self, query: str, documents: list[str]) -> list[float]:
+        """Each document's score, in their order."""
+        body = {"model": self.model, "query": query, "documents": documents}
+        res = await self.http.post("/rerank", json=body | {"top_n": len(documents)})
+        if res.status_code in (401, 403) or res.status_code >= 500:
+            raise Unavailable(f"HTTP {res.status_code}: {res.text[:200]}")
+        if res.status_code != 200:
+            raise LLMError(f"HTTP {res.status_code}: {res.text[:200]}")
+        scores = [0.0] * len(documents)
+        for r in res.json()["results"]:
+            scores[r["index"]] = r["relevance_score"]
+        return scores
