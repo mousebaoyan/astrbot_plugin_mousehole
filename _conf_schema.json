@@ -179,6 +179,36 @@
       }
     }
   },
+  "polls": {
+    "description": "新投票",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "每天 20 点在群里列出论坛上新开的投票",
+        "type": "bool",
+        "default": true,
+        "hint": "过去一天在论坛上发的、到这时还能投的投票帖，包括保研定位帖；每个帖子只列一次。每个群每天最多一条，没有新的投票就不发。"
+      },
+      "groups": {
+        "description": "发到哪些群",
+        "type": "list",
+        "default": [],
+        "hint": "填群号；空的发到论坛上关联的所有群。"
+      },
+      "template": {
+        "description": "新投票的话",
+        "type": "text",
+        "default": "【鼠洞投票】今天鼠洞上新开了 {count} 个投票，来投一票吧：\n{items}",
+        "hint": "{items} 换成新开的投票，每个一行，写法见下一项，最多 5 个；{count} 一共几个，如“3”。{forum} 是论坛地址，如 https://bbs.mousebaoyan.cn。"
+      },
+      "item": {
+        "description": "新投票里的每个帖子",
+        "type": "text",
+        "default": "{n}. {title}（{voters} 人已投）\n{url}",
+        "hint": "{n} 序号，如“1”；{title} 帖子标题，如“求定位：rank 15% 能冲哪些学校”；{voters} 投了票的人数，如“12”；{url} 帖子链接，如 https://bbs.mousebaoyan.cn/t/17。{forum} 是论坛地址。"
+      }
+    }
+  },
   "welcome": {
     "description": "入群欢迎",
     "type": "object",

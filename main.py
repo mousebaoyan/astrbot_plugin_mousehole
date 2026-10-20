@@ -17,6 +17,7 @@ from .mousehole.events import Events
 from .mousehole.forum import Forum, ForumError
 from .mousehole.llm import LLM, Embedder, Settings
 from .mousehole.login import login, wants_login
+from .mousehole.polls import Polls
 from .mousehole.qq import QQ, fill
 from .mousehole.similar import Index
 from .mousehole.suggest import Suggest
@@ -150,6 +151,20 @@ class Mousehole(Star):
             if bounty["enabled"]
             else None
         )
+        polls = c["polls"]
+        self.polls = (
+            Polls(
+                self.forum,
+                self.qq,
+                self.sync,
+                data / "polls.json",
+                groups=[int(g) for g in polls["groups"]],
+                templates=polls,
+                site=c["forum_url"],
+            )
+            if polls["enabled"]
+            else None
+        )
         welcome = c["welcome"]
         self.welcome = (
             Welcome(
@@ -203,6 +218,8 @@ class Mousehole(Star):
             self.spawn(self.answers.run())
         if self.bounties:
             self.spawn(self.bounties.run())
+        if self.polls:
+            self.spawn(self.polls.run())
         if self.welcome:
             self.spawn(self.welcome.run())
 
