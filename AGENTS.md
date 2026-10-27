@@ -35,28 +35,27 @@
 
 ## 写代码
 
-- Python 3.12 以上，带类型注解，异步用 asyncio，HTTP 用 httpx。依赖只有 AstrBot 自带的和画周榜用的 Playwright，不再加。
+- Python 3.12 以上，带类型注解，异步用 asyncio，HTTP 用 httpx。依赖只有 AstrBot 自带的和画周榜用的 Playwright。
 - **边界**：外部进来的数据是 NapCat 的事件、论坛和模型接口的响应、大模型的输出和配置。
 - 领域词和论坛一致：版块 board、帖子 thread、楼层 post，全部叫法见鼠洞的[开发约定 §6](https://github.com/mousebaoyan/mousehole/blob/main/docs/development.md#6-术语)。
-- 频率、门槛、间隔写成模块里的常量，只有维护者确实要改的才做成配置。回放要调的数已经是配置（设计第 4 节）。
+- 回放要调的数已经是配置（设计第 4 节）。
 
 ## 测试
 
-- 用假的论坛（httpx 的 `MockTransport`）、假的大模型和假的 NapCat 事件，不连真的服务。
+- 用假的论坛（httpx 的 `MockTransport`）、假的大模型和假的 NapCat 事件。
 - 值得测的是设计第 12 节列的那些，以及修过的、可能再犯的 bug。
 - 自动收录的效果用回放评，不进单元测试。
 
 ## 防风控
 
-QQ 号被识别成机器人，整个群的服务就断了。照设计第 2 节做：
+照设计第 2 节做：
 - 只读 NapCat 的缓存，不带 `no_cache`，不用 `get_group_member_info`；
-- 不主动私聊，不加好友，主动发到群里的只有开奖结果、收录汇总、周榜和金徽章的祝贺；
-- 新功能要多调一个 QQ 接口，或者让 bot 多发一种消息，先问维护者。
+- 不主动私聊，不加好友，主动发到群里的只有开奖结果、收录汇总、周榜和金徽章的祝贺。
 
-## 隐私和密钥
+## 隐私
 
-- 导出的聊天记录和回放的结果放在仓库外，或者不进 git 的 `data/`、`replay-out/`。提交信息和文档里不贴群友的原话，只写统计数字。
-- 要连论坛，就在本机跑一个（鼠洞仓库的 `pnpm dev`，`pnpm mock-bot setup` 建 token），不用真的 bot token 对线上论坛做实验。
+- 导出的聊天记录和回放的结果放在仓库外，或者不进 git 的 `data/`、`replay-out/`。提交信息和文档里引用群聊只写统计数字。
+- 要连论坛，就在本机跑一个（鼠洞仓库的 `pnpm dev`，`pnpm mock-bot setup` 建 token）。
 
 ## 先问维护者
 
