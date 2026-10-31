@@ -6,6 +6,7 @@ from itertools import pairwise
 import pytest
 from conftest import GROUP, Script, embed
 
+from mousehole import archive
 from mousehole.archive import Message, Tuning
 from mousehole.similar import Index
 from tools import history
@@ -238,3 +239,13 @@ async def test_batches_in_none_of_the_runs_written_down_are_not_left_out_unsaid(
         await archive_exports(
             client, Script(), Index(client, embed, "test", None), [path], data, Tuning(), 1
         )
+
+
+def test_what_is_organized_counts_a_batch_stopped_halfway_by_what_is_left_of_it(tmp_path):
+    first, halfway, untouched = (batch(day, 9, 3) for day in (1, 2, 3))
+    (tmp_path / "done.txt").write_text(f"{first.name}\n{halfway.name}\n")
+    (tmp_path / "run-0" / "batch").mkdir(parents=True)
+    left = [Message(i, ASKER, halfway.start + i, []).record() for i in (1, 2)]
+    archive.write(tmp_path / "run-0" / "batch" / f"{halfway.name}.jsonl", left)
+    taken = history.organized(tmp_path, [first, halfway, untouched])
+    assert taken == {first.name: 3, halfway.name: 1, untouched.name: 0}

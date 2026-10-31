@@ -1,20 +1,26 @@
-"""An in-memory forum answering the API auto-archiving uses, for unit tests and replay
-(docs/replay.md §3). It follows the forum's rules that matter here: one floor per QQ message,
-idempotency keys, `proxy_disabled`, and titles editing the opening post."""
+"""An in-memory forum answering the API auto-archiving uses, for unit tests, replay
+(docs/replay.md §3) and the history archived offline (docs/history.md). It follows the forum's
+rules that matter here: one floor per QQ message, idempotency keys, `proxy_disabled`, and titles
+editing the opening post."""
 
 import json
 import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import httpx
 
+from mousehole.files import append_line
 from mousehole.forum import Forum
 
 # The largest integer the forum's JSON keeps exact.
 MAX_ID = 2**53 - 1
+# What is made offline gets IDs from here on, past any the forum has: an import tells them from
+# the forum's own by it.
+OFFLINE_IDS = 10**12
 
 
 @dataclass
@@ -84,9 +90,67 @@ class FakeForum:
         self.moderate = True
         self.uploads = 0
         self.ids = 0
+        # Each thread's bigrams, as /search/similar compares them, made again once it changes.
+        self.words: dict[int, set[str]] = {}
+
+    @classmethod
+    def of_snapshot(cls, snapshot: dict) -> "FakeForum":
+        """The forum as tools/handoff.py took it, for the history archived offline."""
+        fake = cls(snapshot["boards"], snapshot["tags"])
+        for t in snapshot["threads"]:
+            thread = Thread(
+                t["id"], t["board"], t["kind"], t["title"], t["tags"], 0, t["created_at"]
+            )
+            thread.locked = t["locked"]
+            for p in t["posts"]:
+                post = Post(
+                    p["id"], t["id"], p["floor"], 0, p["body"], p["reply_to"], p["created_at"]
+                )
+                post.edited_at, post.deleted = p["edited_at"], p["deleted"]
+                thread.posts.append(post)
+                fake.posts[post.id] = post
+            fake.threads[thread.id] = thread
+        for group, message, post in snapshot["links"]:
+            fake.links[group, message] = post
+        fake.ids = OFFLINE_IDS
+        return fake
 
     def client(self) -> Forum:
         return Forum("http://forum.test", "token", httpx.MockTransport(self.handle))
+
+    def journaled(self, path: Path) -> Forum:
+        """A client that writes down each change it makes, as it is made, one request a line.
+        Made again on the same snapshot, in order, the changes bring the fake back to where it
+        was, IDs and all; the import makes them on the forum (tools/handoff.py)."""
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                entry = json.loads(line)
+                res = self.handle(request_of(entry))
+                made = self.made(entry["method"], entry["path"], res)
+                if res.status_code >= 400 or made != entry["made"]:
+                    raise SystemExit(f"{path} does not go with the snapshot: {line[:200]}")
+
+        def handle(request: httpx.Request) -> httpx.Response:
+            # Asked again with a key: answered as the first time, nothing made.
+            fresh = request.headers.get("Idempotency-Key") not in self.keys
+            res = self.handle(request)
+            if request.method != "GET" and res.status_code < 400 and fresh:
+                entry = entry_of(request)
+                entry["made"] = self.made(entry["method"], entry["path"], res)
+                append_line(path, json.dumps(entry, ensure_ascii=False))
+            return res
+
+        return Forum("http://forum.offline", "", httpx.MockTransport(handle))
+
+    def made(self, method: str, path: str, res: httpx.Response) -> dict:
+        """The thread and the floor a write made."""
+        match method, path.strip("/").split("/"):
+            case "POST", ["threads"]:
+                thread = res.json()["id"]
+                return {"thread": thread, "post": self.threads[thread].posts[0].id}
+            case "POST", ["threads", _, "posts"]:
+                return {"post": res.json()["id"]}
+        return {}
 
     def next_id(self) -> int:
         self.ids += 1
@@ -195,7 +259,7 @@ class FakeForum:
                 return httpx.Response(201, json={"name": body["name"], "kind": body["kind"]})
             case "GET", ["threads"]:
                 live = [t for t in self.threads.values() if not t.deleted]
-                return ok({"items": [{"id": t.id} for t in live], "next_cursor": None})
+                return ok({"items": [self.thread_json(t) for t in live], "next_cursor": None})
             case "POST", ["threads"]:
                 return self.create_thread(body, user)
             case "GET", ["threads", thread]:
@@ -213,6 +277,7 @@ class FakeForum:
                 opening = t.posts[0]
                 opening.revisions.append(f"标题：{t.title}")
                 t.title = body["title"]
+                self.words.pop(t.id, None)
                 opening.edited_at = self.now()
                 return ok(self.thread_json(t))
             case "DELETE", ["threads", thread]:
@@ -239,6 +304,7 @@ class FakeForum:
                 p = self.posts[int(post)]
                 p.deleted = True
                 self.unlink([p])
+                self.words.pop(p.thread, None)
                 return httpx.Response(204)
             case "PUT", ["posts", post, "reaction"]:
                 p = self.posts[int(post)]
@@ -283,7 +349,11 @@ class FakeForum:
         for t in self.threads.values():
             if t.deleted:
                 continue
-            words = bigrams(t.title + "".join(p.body for p in t.posts if not p.deleted))
+            if t.id not in self.words:
+                self.words[t.id] = bigrams(
+                    t.title + "".join(p.body for p in t.posts if not p.deleted)
+                )
+            words = self.words[t.id]
             shared = len(wanted & words)
             if shared:
                 scored.append((shared / (shared + 10), t))
@@ -370,6 +440,7 @@ class FakeForum:
         t.posts.append(p)
         self.posts[p.id] = p
         self.link(body["source"], p)
+        self.words.pop(t.id, None)
         return httpx.Response(201, json=self.post_json(p))
 
     def edit_post(self, p: Post, body: dict) -> httpx.Response:
@@ -379,7 +450,35 @@ class FakeForum:
         p.body = self.render(body["content"])
         p.edited_at = self.now()
         self.link(body["source"], p)
+        self.words.pop(p.thread, None)
         return ok(self.post_json(p))
+
+
+def entry_of(request: httpx.Request) -> dict:
+    """A write as the journal keeps it."""
+    act_as = request.headers.get("X-Act-As")
+    json_body = request.headers.get("Content-Type") == "application/json"
+    return {
+        "method": request.method,
+        "path": request.url.path.removeprefix("/api/v1"),
+        "act_as": int(act_as.removeprefix("qq:")) if act_as else None,
+        "key": request.headers.get("Idempotency-Key"),
+        "body": json.loads(request.content) if json_body else None,
+    }
+
+
+def request_of(entry: dict) -> httpx.Request:
+    headers = {}
+    if entry["act_as"] is not None:
+        headers["X-Act-As"] = f"qq:{entry['act_as']}"
+    if entry["key"] is not None:
+        headers["Idempotency-Key"] = entry["key"]
+    content = None
+    if entry["body"] is not None:
+        headers["Content-Type"] = "application/json"
+        content = json.dumps(entry["body"], ensure_ascii=False).encode()
+    url = f"http://forum.offline/api/v1{entry['path']}"
+    return httpx.Request(entry["method"], url, headers=headers, content=content)
 
 
 def ok(data: Any) -> httpx.Response:
