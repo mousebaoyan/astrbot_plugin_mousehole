@@ -33,7 +33,7 @@
 - 大模型的 API key。
 - 嵌入模型要用 bge-m3：查重的门槛是按它调的，换了模型相似度对不上。不用自己跑，[硅基流动](https://www.siliconflow.cn/pricing)的 `BAAI/bge-m3` 免费，注册拿一个 key 就行；也可以本机装 Ollama，`ollama pull bge-m3`，地址填 `http://127.0.0.1:11434/v1`、模型填 `bge-m3`。
 
-配置写在 `config.json`，放在 `handoff/` 外面，有 key，不要发回来：
+配置写在 `config.json`，和 `handoff/` 放在同一层，下面的命令都按这样写；里面有 key，不要发回来：
 
 ```json
 {
@@ -75,9 +75,11 @@
 | `prices` | 每百万 token 的价格，只用来算花费，从 [OpenAI 的价格页](https://developers.openai.com/api/docs/pricing)抄这个模型的（用 flex 就抄 Flex 那一列）。`cache_write` 是写进缓存的输入，GPT-5.6 以后的模型按输入价的 1.25 倍算，之前的模型没有，填和 `input` 一样就行 |
 | `archive` | 一段多少条消息、跟进多久，不用改 |
 
+用中转（OpenAI 兼容的第三方接口）的：`base_url` 填中转给的地址，`model` 填它那边的名字；它不支持 `flex` 的，`service_tier` 留空，`prices` 按中转的价格填。中转不一定返回 token 数，试跑完看 `status` 里有没有，没有的话花费只能去中转的后台看。
+
 ## 3. 试跑
 
-先拿几十段比较几种模型和思考程度。每试一种复制一份数据目录，不要在 `handoff/` 本身上试：
+先拿几十段比较几种模型和思考程度。每试一种复制一份数据目录（Windows 在资源管理器里复制粘贴就行），不要在 `handoff/` 本身上试：
 
 ```bash
 cp -r ../handoff ../try-luna-low
@@ -89,6 +91,7 @@ uv run python -m tools.history show ../handoff/export/legacy.json --data ../try-
 - `--workers 1` 时从同一份 `handoff/` 复制出来的，收的是同样的那几段，几种模型可以直接比。想试 6 月的，加上 `--from "2026-06-21 04:00"`。
 - `show` 把这次发出的帖子排成 Markdown：新帖整个列出，论坛上已有的帖子只列新加的楼层，每一层下面是它收进的原消息。作者是 QQ 号。对照[回放实验](replay.md)第 5.2 节的表看：收错、漏收、记错人、挂错、改了意思、拆错、补充没进去、标题、版块和标签。"改了意思"和"记错人"最要紧。
 - `status` 写着这个模型花了多少、每千条消息多少钱、照这样收完剩下的要多少，以及丢掉的项各几个；`split` 多说明想得太长，降低思考程度或者换模型。
+- 每段都 `failed`（跑的时候打印 `HTTP 400`、`404` 这类报错）的，是配置不对：模型名写错了，或者接口不支持某个参数。改好再试。收失败的段会跳过、当作收过了，所以没在副本上试过的配置不要直接在 `handoff/` 上跑。
 - 定下来以后把试跑的目录删掉。
 
 ## 4. 正式跑
@@ -108,7 +111,8 @@ run 3 group 100200300 06-21 09:12: 4 done, 0 dropped; 1,812 of 57,740 messages, 
 
 依次是：哪一段、这一段的时间，发了几项、丢了几项；这次跑收了多少条、一共要收多少条、照这样还要多久；这次花了多少钱、用了多少 token，照这样收完要多少钱。
 
-- 随时可以 Ctrl-C 停下，同样的命令再跑就接着收。中间换模型、改思考程度也行，`status` 按模型分开记。
+- 随时可以 Ctrl-C 停下，同样的命令再跑就接着收。中间换模型、改思考程度也行，`status` 按模型分开记；换之前先在副本上试几段。
+- 一段接一段地报错、`done` 一直是 0 的，马上 Ctrl-C，看报错改配置，不然后面的都会被跳过。
 - 一直出现 `Waiting 10 minutes`：大模型或嵌入模型的接口不通，修好了会自己接着收；后面带着 `insufficient_quota` 的是余额用完了。
 - 不时拿 OpenAI 后台的用量和 `status` 对一下。
 
@@ -122,7 +126,7 @@ uv run python -m tools.history status ../handoff/export/legacy.json --data ../ha
 
 ## 6. 发回来
 
-停下以后，把 `handoff/` 整个打包发给维护者，附上 `status` 的输出。`threads.npz` 可以不带，`config.json` 不要带。没跑完也一样发：维护者先导入收完的部分，剩下的接着跑。
+停下以后，把 `handoff/` 整个打包发给维护者，附上 `status` 的输出。`export/` 和 `threads.npz` 可以不带，`config.json` 不要带。没跑完也一样发：维护者先导入收完的部分，剩下的接着跑。
 
 ## 7. 维护者
 
