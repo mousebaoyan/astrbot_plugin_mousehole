@@ -68,3 +68,13 @@ async def test_a_thread_put_before_the_index_is_used_joins_the_saved_ones(tmp_pa
     again = Index(forum, vectors(table), "bge-m3", path)
     await again.load()
     assert sorted(again.ids.tolist()) == [first["id"], 99]
+
+
+async def test_without_an_embedding_model_threads_are_found_by_their_words():
+    fake = FakeForum()
+    forum = fake.client()
+    index = Index(forum, None, "", None)
+    await index.load()
+    thread = await post(forum, "夏令营材料", 1)
+    await index.thread_created(thread["id"])
+    assert await index.candidates("夏令营要什么材料", "") == [thread["id"]]

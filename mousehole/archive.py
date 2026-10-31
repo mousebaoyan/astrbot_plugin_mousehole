@@ -519,7 +519,8 @@ class Archive:
         would fail, with the boards and tags of the day and the thread index."""
         await self.refresh_taxonomy()
         await self.index.load()
-        await self.index.embed(["鼠洞"])
+        if self.index.embed is not None:
+            await self.index.embed(["鼠洞"])
 
     async def refresh_taxonomy(self) -> None:
         boards = (await self.forum.call("GET", "/boards"))["items"]

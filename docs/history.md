@@ -31,7 +31,7 @@
 
 - 装 [uv](https://docs.astral.sh/uv/)，在 `mousehole-plugin/` 里 `uv sync`。下面的命令都在这个目录里跑，路径按实际的写。
 - 大模型的 API key。
-- 嵌入模型要用 bge-m3：查重的门槛是按它调的，换了模型相似度对不上。不用自己跑，[硅基流动](https://www.siliconflow.cn/pricing)的 `BAAI/bge-m3` 免费，注册拿一个 key 就行；也可以本机装 Ollama，`ollama pull bge-m3`，地址填 `http://127.0.0.1:11434/v1`、模型填 `bge-m3`。
+- 嵌入模型，可以不要：新提问靠它找论坛上问过同样问题的帖子，并进去。不要的话把配置里的 `embedding` 整个删掉，只按字面找，同一个问题换了说法的多半找不到：以前收录时靠检索并进旧帖的，只按字面能找回四成，剩下的会另开新帖，导入后由维护者合并。要用就得是 bge-m3，查重的门槛是按它调的，换了模型相似度对不上。不用自己跑，[硅基流动](https://www.siliconflow.cn/pricing)的 `BAAI/bge-m3` 免费，注册拿一个 key 就行；也可以本机装 Ollama，`ollama pull bge-m3`，地址填 `http://127.0.0.1:11434/v1`、模型填 `bge-m3`。
 
 配置写在 `config.json`，和 `handoff/` 放在同一层，下面的命令都按这样写；里面有 key，不要发回来：
 

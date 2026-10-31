@@ -33,13 +33,15 @@ class Index:
     def __init__(
         self,
         forum: Forum,
-        embed: Embed,
+        embed: Embed | None,
         model: str,
         path: Path | None,
         min_similarity: float = MIN_SIMILARITY,
     ):
         self.forum = forum
         self.min_similarity = min_similarity
+        # None for the forum's literal search alone, as the history may be archived without an
+        # embedding model (docs/history.md).
         self.embed = embed
         self.model = model
         # None keeps it in memory only, as replay does.
@@ -65,6 +67,9 @@ class Index:
             await self.rebuild()
 
     async def rebuild(self) -> None:
+        if self.embed is None:
+            self.loaded = True
+            return
         texts: dict[int, str] = {}
         cursor = None
         while True:
@@ -94,6 +99,8 @@ class Index:
         write_file(self.path, saved.getvalue())
 
     async def put(self, thread: int, title: str, opening: str) -> None:
+        if self.embed is None:
+            return
         await self.load()
         vector = normalized(await self.embed([text_of(title, opening)]))
         keep = self.ids != thread

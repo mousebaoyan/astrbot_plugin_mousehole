@@ -262,9 +262,13 @@ async def history(args: argparse.Namespace) -> None:
     settings = Settings.of(config["llm"] | {"tokens_per_day": 0})
     meter = Meter(data / "usage.jsonl", settings.model, config.get("prices"))
     llm = LLM(settings, record=meter.record)
-    e = config["embedding"]
-    embedder = Embedder(e["base_url"], e["api_key"], e["model"])
-    index = Index(forum, embedder.embed, e["model"], data / "threads.npz", e["min_similarity"])
+    embedder = None
+    if "embedding" in config:
+        e = config["embedding"]
+        embedder = Embedder(e["base_url"], e["api_key"], e["model"])
+        index = Index(forum, embedder.embed, e["model"], data / "threads.npz", e["min_similarity"])
+    else:
+        index = Index(forum, None, "", None)
     complete = off_peak(llm.complete) if args.off_peak else llm.complete
     await archive_exports(
         forum,
@@ -282,7 +286,8 @@ async def history(args: argparse.Namespace) -> None:
     )
     await forum.close()
     await llm.close()
-    await embedder.close()
+    if embedder is not None:
+        await embedder.close()
 
 
 class Meter:
