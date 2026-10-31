@@ -52,7 +52,8 @@ class Settings:
     model: str
     # "json_schema", "json_object" or "off"
     structured_output: str = "json_schema"
-    # "enabled", "disabled", or "omit" for providers that know no such field
+    # "enabled", "disabled", "omit" for providers that know no such field, or "openai" for
+    # OpenAI's reasoning models, whose thinking only reasoning_effort sets
     thinking: str = "enabled"
     reasoning_effort: str = "low"
     temperature: float = 0.2
@@ -61,6 +62,8 @@ class Settings:
     timeout_seconds: int = 120
     # 0 for no limit.
     tokens_per_day: int = 0
+    # OpenAI's processing tier, "flex" at half the price, "" to leave it out.
+    service_tier: str = ""
 
     @classmethod
     def of(cls, config: dict) -> "Settings":
@@ -73,7 +76,9 @@ class LLM:
         settings: Settings,
         transport: httpx.AsyncBaseTransport | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        record: Callable[[dict[str, Any]], None] | None = None,
     ):
+        """`record` is given the usage of every answer, as the API reports it."""
         self.settings = settings
         headers = {"Authorization": f"Bearer {settings.api_key}"} if settings.api_key else {}
         self.http = httpx.AsyncClient(
@@ -83,6 +88,7 @@ class LLM:
             timeout=settings.timeout_seconds,
         )
         self.sleep = sleep
+        self.record = record
         self.day = time.strftime("%Y-%m-%d")
         self.spent = 0
 
@@ -114,6 +120,13 @@ class LLM:
             }
         elif s.structured_output != "off":
             body["response_format"] = {"type": "json_object"}
+        if s.service_tier:
+            body["service_tier"] = s.service_tier
+        if thinking == "openai":
+            # Its reasoning models take neither max_tokens nor a temperature.
+            body["max_completion_tokens"] = body.pop("max_tokens")
+            body["reasoning_effort"] = s.reasoning_effort if think else "none"
+            return body
         if thinking != "omit":
             body["thinking"] = {"type": thinking}
         if thinking == "enabled":
@@ -158,7 +171,9 @@ class LLM:
                 if res.status_code == 429:
                     busy += 1
                     if busy == BUSY_TRIES:
-                        raise Unavailable(f"HTTP 429 for {BUSY_WAIT * BUSY_TRIES} seconds")
+                        # OpenAI says so too when the credit is used up.
+                        seconds = BUSY_WAIT * BUSY_TRIES
+                        raise Unavailable(f"HTTP 429 for {seconds} seconds: {text[:200]}")
                     await self.sleep(BUSY_WAIT)
                     continue
                 if res.status_code in (401, 402, 403):
@@ -175,6 +190,8 @@ class LLM:
             failures += 1
         tokens = usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0)
         self.spent += sum(tokens)
+        if self.record is not None:
+            self.record(usage)
         # Thought all it may, or, as Step does after 30k tokens or so of thinking, stopped with
         # nothing said: another try at the same would too.
         if finish == "length" or answer == "":

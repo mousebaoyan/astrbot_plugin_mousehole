@@ -100,6 +100,20 @@ async def test_a_call_without_thinking_turns_it_off_only_where_it_is_on(thinking
     assert "reasoning_effort" not in body and body["temperature"] == 0.2
 
 
+@pytest.mark.parametrize(("think", "effort"), [(True, "low"), (False, "none")])
+async def test_openai_reasoning_models_are_asked_as_they_take_it(think, effort):
+    transport, sent = answering()
+    used = []
+    change = {"thinking": "openai", "service_tier": "flex"}
+    llm = LLM(Settings(**vars(ECNU) | change), transport, record=used.append)
+    await llm.complete("系统", "提示", DUPLICATE_SCHEMA, think=think)
+    (body,) = sent
+    assert (body["reasoning_effort"], body["max_completion_tokens"]) == (effort, 32768)
+    assert body["service_tier"] == "flex"
+    assert not {"thinking", "temperature", "max_tokens"} & set(body)
+    assert used == [{"prompt_tokens": 600, "completion_tokens": 400}]
+
+
 async def test_too_many_requests_at_once_wait_their_turn():
     transport, sent = answering(429, 429)
     slept = []

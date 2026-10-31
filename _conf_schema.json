@@ -392,22 +392,31 @@
         "options": [
           "enabled",
           "disabled",
-          "omit"
+          "omit",
+          "openai"
         ],
-        "hint": "enabled 开、disabled 关（ECNU 的 thinking 参数）；omit：不传，接口不认这个参数时用。"
+        "hint": "enabled 开、disabled 关（ECNU 的 thinking 参数）；omit：不传，接口不认这个参数时用；openai：OpenAI 的推理模型，只用思考程度控制思考。"
       },
       "reasoning_effort": {
         "description": "思考程度",
         "type": "string",
         "default": "low",
         "options": [
+          "none",
+          "minimal",
           "low",
           "medium",
           "high",
           "xhigh",
           "max"
         ],
-        "hint": "只在开了思考时生效。ecnu-plus 可选 low、medium、xhigh；ecnu-max 可选 low、high、max。越高越慢、token 越多。"
+        "hint": "只在开了思考时生效。ecnu-plus 可选 low、medium、xhigh；ecnu-max 可选 low、high、max。越高越慢、token 越多。OpenAI 的模型还有 none、minimal。"
+      },
+      "service_tier": {
+        "description": "处理档位",
+        "type": "string",
+        "default": "",
+        "hint": "OpenAI 的 service_tier：flex 按 Batch 的价格算，一半的钱，慢一些。空的不传。"
       },
       "temperature": {
         "description": "温度",
@@ -485,22 +494,31 @@
         "options": [
           "enabled",
           "disabled",
-          "omit"
+          "omit",
+          "openai"
         ],
-        "hint": "enabled 开、disabled 关（ECNU 的 thinking 参数）；omit：不传，接口不认这个参数时用。"
+        "hint": "enabled 开、disabled 关（ECNU 的 thinking 参数）；omit：不传，接口不认这个参数时用；openai：OpenAI 的推理模型，只用思考程度控制思考。"
       },
       "reasoning_effort": {
         "description": "思考程度",
         "type": "string",
         "default": "low",
         "options": [
+          "none",
+          "minimal",
           "low",
           "medium",
           "high",
           "xhigh",
           "max"
         ],
-        "hint": "只在开了思考时生效。ecnu-plus 可选 low、medium、xhigh；ecnu-max 可选 low、high、max。越高越慢、token 越多。"
+        "hint": "只在开了思考时生效。ecnu-plus 可选 low、medium、xhigh；ecnu-max 可选 low、high、max。越高越慢、token 越多。OpenAI 的模型还有 none、minimal。"
+      },
+      "service_tier": {
+        "description": "处理档位",
+        "type": "string",
+        "default": "",
+        "hint": "OpenAI 的 service_tier：flex 按 Batch 的价格算，一半的钱，慢一些。空的不传。"
       },
       "temperature": {
         "description": "温度",

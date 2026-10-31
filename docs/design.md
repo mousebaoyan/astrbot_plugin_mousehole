@@ -111,7 +111,8 @@ QQ 的风控会识别"像机器人"的账号，插件尽量让 bot 的操作和�
 | `llm.base_url`、`llm.api_key`、`llm.model` | ECNU 的地址、空、`ecnu-plus` | 大模型，OpenAI 兼容接口，收录和猜你想问用 |
 | `llm.rerank_model` | `ecnu-rerank` | 猜你想问给候选打分的 rerank 模型，走 `llm.base_url` 和 `llm.api_key` 的 `/rerank`（第 8.11 节） |
 | `llm.structured_output` | `json_schema` | `json_schema` 按插件给的格式约束输出；`json_object` 只要求是 JSON；`off` 不传 |
-| `llm.thinking`、`llm.reasoning_effort` | `enabled`、`low` | 思考模式和思考程度（ECNU 的 `thinking`、`reasoning_effort`）；`omit` 是不传，给不认这些参数的接口用 |
+| `llm.thinking`、`llm.reasoning_effort` | `enabled`、`low` | 思考模式和思考程度（ECNU 的 `thinking`、`reasoning_effort`）；`omit` 是不传，给不认这些参数的接口用；`openai` 是 OpenAI 的推理模型：只传 `reasoning_effort`（不思考时为 `none`），不传 `thinking` 和温度，输出上限按 `max_completion_tokens` 传 |
+| `llm.service_tier` | 空 | OpenAI 的处理档位，`flex` 按 Batch 的价格算、慢一些；空的不传 |
 | `llm.temperature` | 0.2 | 只在不思考时传 |
 | `llm.max_tokens`、`llm.timeout_seconds` | 32768、120 | 每次最多输出多少 token（含思考）；多久没收到新内容就断开（第 8.2 节） |
 | `llm.tokens_per_day` | 100 万 | 每天最多用多少 token，AI 总结的另算；用完了停下，第二天接着；0 不限 |
