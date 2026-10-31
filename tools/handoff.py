@@ -1,20 +1,23 @@
 """Hands the history archiving to someone with an LLM of their own, and takes back what they made
-(docs/history.md). `pack` writes all they need: the exports, how far the archiving got, and a
-snapshot of the forum to archive onto offline. `import` makes on the forum what they wrote to the
-snapshot.
+(docs/history.md). `pack` writes all they need, and zips it: the code, the exports, how far the
+archiving got, and a snapshot of the forum to archive onto offline. `import` makes on the forum
+what they wrote to the snapshot.
 
 uv run python -m tools.handoff pack EXPORT... --config data/history-prod.json --data history \
-    --out handoff
+    --out ../mousehole-history
 uv run python -m tools.handoff import EXPORT... --config data/history-prod.json --data handoff
 """
 
 import argparse
 import asyncio
+import io
 import json
 import logging
 import re
 import shutil
+import subprocess
 import sys
+import tarfile
 from collections import Counter
 from functools import partial
 from pathlib import Path
@@ -28,6 +31,28 @@ from tools.history import Patient, enroll, kind_of, organized, patiently, read_e
 # Floors the forum lists at a time.
 PAGE = 20
 
+# What the one the package goes to reads first.
+README = """# 鼠群历史收录
+
+把鼠群 2026 年 3–8 月还没收录的群聊，用你自己的大模型 API 整理成[鼠洞](https://bbs.mousebaoyan.cn)的帖子。全程在你的电脑上跑，不连论坛；跑完把 `handoff/` 发回来，由维护者导入论坛。
+
+照 [`mousehole-plugin/docs/history.md`](mousehole-plugin/docs/history.md) 第 2–7 节做，大致是：
+
+1. 装 uv，在 `mousehole-plugin/` 里 `uv sync`。
+2. 在 `config.json` 里填上大模型的 key。
+3. 在副本上试跑几十段，比较几种模型和思考程度，选一种。
+4. 在 `handoff/` 上正式跑，随时可以停，再跑接着收。
+5. 把 `handoff/` 压缩发回来，没跑完也行。
+
+| 路径 | 是什么 |
+| --- | --- |
+| `config.json` | 配置。填上 key 以后不要发给别人 |
+| `handoff/` | 要收录的群聊、收到哪了、论坛的快照；收出来的也记在这里，发回来的就是它 |
+| `mousehole-plugin/` | 代码，命令都在这里面跑 |
+
+群聊原文只用来收录，不要外传。
+"""
+
 
 # ---- Packing
 
@@ -37,26 +62,38 @@ async def pack(args: argparse.Namespace) -> None:
     data, out = Path(args.data), Path(args.out)
     if (data / "forum").exists():
         raise SystemExit(f"{data} is archived offline already: hand it on as it is")
+    out.mkdir()
+    # The code committed, with what to do first and a config to fill in.
+    code = subprocess.run(
+        ["git", "archive", "HEAD", "--prefix", "mousehole-plugin/"], capture_output=True, check=True
+    ).stdout
+    with tarfile.open(fileobj=io.BytesIO(code)) as tar:
+        tar.extractall(out, filter="data")
+    shutil.copy(out / "mousehole-plugin" / "docs" / "history-config.json", out / "config.json")
+    (out / "README.md").write_text(README, encoding="utf-8")
+
+    handoff = out / "handoff"
     exports = [Path(x) for x in args.exports]
-    (out / "export").mkdir(parents=True)
+    (handoff / "export").mkdir(parents=True)
     for path in exports:
-        shutil.copy(path, out / "export" / path.name)
+        shutil.copy(path, handoff / "export" / path.name)
     for name in ("runs.json", "done.txt"):
-        shutil.copy(data / name, out / name)
+        shutil.copy(data / name, handoff / name)
     for run in sorted(data.glob("run-*")):
-        shutil.copytree(run / "batch", out / run.name / "batch")
-        (out / run.name / "pending").mkdir()
-        shutil.copy(run / "archive.json", out / run.name / "archive.json")
+        shutil.copytree(run / "batch", handoff / run.name / "batch")
+        (handoff / run.name / "pending").mkdir()
+        shutil.copy(run / "archive.json", handoff / run.name / "archive.json")
 
     forum = Forum(config["forum_url"], config["token"], Patient())
     wanted = quoted(exports, data)
     snapshot = await patiently(lambda: take_snapshot(forum, wanted))
-    (out / "forum").mkdir()
+    (handoff / "forum").mkdir()
     text = json.dumps(snapshot, ensure_ascii=False)
-    (out / "forum" / "snapshot.json").write_text(text, encoding="utf-8")
+    (handoff / "forum" / "snapshot.json").write_text(text, encoding="utf-8")
     await forum.close()
+    package = shutil.make_archive(str(out), "zip", out.parent, out.name)
     print(
-        f"{out}: {len(snapshot['threads'])} threads, "
+        f"{package}: {len(snapshot['threads'])} threads, "
         f"{len(snapshot['links'])} messages quoted from the forum",
         file=sys.stderr,
     )
@@ -261,13 +298,15 @@ def main() -> None:
         description="把历史收录交给别人离线跑，再把结果导入论坛（docs/history.md）"
     )
     commands = parser.add_subparsers(dest="command", required=True)
-    pack_ = commands.add_parser("pack", help="打包：导出、收录到哪了、论坛的快照")
+    pack_ = commands.add_parser("pack", help="打包：代码、导出、收录到哪了、论坛的快照")
     import__ = commands.add_parser("import", help="把离线收录发出的内容发到论坛")
     for command in (pack_, import__):
         command.add_argument("exports", nargs="+", help="QQChatExporter 导出的 JSON")
         command.add_argument("--config", required=True, help="插件的配置，要论坛的地址和 token")
     pack_.add_argument("--data", required=True, help="在线收录的数据目录")
-    pack_.add_argument("--out", required=True, help="打包到哪个目录，要还没有")
+    pack_.add_argument(
+        "--out", required=True, help="打包到哪个目录，要还没有；旁边打一个同名的 zip"
+    )
     import__.add_argument("--data", required=True, help="离线收录的数据目录")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

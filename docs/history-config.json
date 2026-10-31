@@ -1,0 +1,21 @@
+{
+  "llm": {
+    "base_url": "https://api.openai.com/v1",
+    "api_key": "在这里填你的 key",
+    "model": "gpt-6-luna",
+    "structured_output": "json_schema",
+    "thinking": "openai",
+    "reasoning_effort": "low",
+    "service_tier": "flex",
+    "max_tokens": 65536,
+    "timeout_seconds": 900
+  },
+  "prices": {
+    "currency": "$",
+    "input": 0.05,
+    "cached_input": 0.005,
+    "cache_write": 0.0625,
+    "output": 0.25
+  },
+  "archive": { "segment_messages": 50, "follow_messages": 200 }
+}
