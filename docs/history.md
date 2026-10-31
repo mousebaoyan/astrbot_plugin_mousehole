@@ -4,7 +4,7 @@
 
 | 谁 | 做什么 | 见 |
 | --- | --- | --- |
-| 维护者 | 打包：脱敏的导出、收到哪了、论坛的快照 | 第 7 节 |
+| 维护者 | 打包：群聊的导出、收到哪了、论坛的快照 | 第 7 节 |
 | 跑的人 | 配好模型，试跑几种模型和思考程度，选定了正式跑，随时看进度和花费 | 第 2–5 节 |
 | 跑的人 | 把数据目录发回来，跑没跑完都行 | 第 6 节 |
 | 维护者 | 导入论坛，合并重复的帖子；没跑完的接着跑 | 第 7 节 |
@@ -14,7 +14,7 @@
 | 路径 | 内容 |
 | --- | --- |
 | `mousehole-plugin/` | 插件的代码 |
-| `handoff/export/*.json` | 群聊的导出：QQ 号换成了编号，没有群名片和昵称。聊天原文都在里面，只用来收录，不要外传 |
+| `handoff/export/*.json` | 群聊的导出，只用来收录，不要外传 |
 | `handoff/runs.json`、`done.txt`、`run-*/` | 收到哪了：各段的范围、收过的批次、收了一半的批次 |
 | `handoff/forum/snapshot.json` | 打包时论坛上的帖子和楼层、版块、标签，查重和接着跟进旧帖用 |
 
@@ -87,7 +87,7 @@ uv run python -m tools.history show ../handoff/export/legacy.json --data ../try-
 ```
 
 - `--workers 1` 时从同一份 `handoff/` 复制出来的，收的是同样的那几段，几种模型可以直接比。想试 6 月的，加上 `--from "2026-06-21 04:00"`。
-- `show` 把这次发出的帖子排成 Markdown：新帖整个列出，论坛上已有的帖子只列新加的楼层，每一层下面是它收进的原消息。作者是编号。对照[回放实验](replay.md)第 5.2 节的表看：收错、漏收、记错人、挂错、改了意思、拆错、补充没进去、标题、版块和标签。"改了意思"和"记错人"最要紧。
+- `show` 把这次发出的帖子排成 Markdown：新帖整个列出，论坛上已有的帖子只列新加的楼层，每一层下面是它收进的原消息。作者是 QQ 号。对照[回放实验](replay.md)第 5.2 节的表看：收错、漏收、记错人、挂错、改了意思、拆错、补充没进去、标题、版块和标签。"改了意思"和"记错人"最要紧。
 - `status` 写着这个模型花了多少、每千条消息多少钱、照这样收完剩下的要多少，以及丢掉的项各几个；`split` 多说明想得太长，降低思考程度或者换模型。
 - 定下来以后把试跑的目录删掉。
 
@@ -129,11 +129,11 @@ uv run python -m tools.history status ../handoff/export/legacy.json --data ../ha
 ### 打包
 
 ```bash
-uv run python -m tools.handoff pack data/legacy/legacy.json --config data/history-prod.json --data data/history-legacy --people data/history-people.json --out ../handoff
+uv run python -m tools.handoff pack data/legacy/legacy.json --config data/history-prod.json --data data/history-legacy --out ../handoff
 git archive HEAD --prefix mousehole-plugin/ -o ../mousehole-plugin.tar
 ```
 
-- 导出：QQ 号换成编号，从 1 起，记在 `--people` 的对照表里（没有就新建，以后打包接着用同一份）；只留 `tools/history.py` 读的字段，系统消息和撤回的消息去掉。对照表丢了就没法导入，打完包备份一份。
+- 导出：原样复制。
 - 收到哪了：`runs.json`、`done.txt`，各段的 `archive.json` 和收了一半的批次。
 - 快照：论坛上的所有帖子和楼层（Markdown 原文）、版块、标签；还有剩下的消息引用了、已经收进论坛的那些消息在哪一层，离线时照样能接着跟进那些帖子。用 bot 的 token 只读，要几分钟。
 - 已经是离线收录的目录不再打包，要转交就直接发它。
@@ -141,18 +141,18 @@ git archive HEAD --prefix mousehole-plugin/ -o ../mousehole-plugin.tar
 ### 导入
 
 ```bash
-uv run python -m tools.handoff import data/legacy/legacy.json --config data/history-prod.json --data 发回来的/handoff --people data/history-people.json
+uv run python -m tools.handoff import data/legacy/legacy.json --config data/history-prod.json --data 发回来的/handoff
 ```
 
-- 先给论坛还不认识的退群的人建账号，用原来的导出里的名字（设计第 8.10 节），所以这里给的是没脱敏的导出。
-- `journal.jsonl` 按顺序发到论坛：编号换回 QQ 号，离线时的帖子和楼层 ID（从 10^12 起）换成论坛上的；幂等键、来源和群里发出的时间照原样带。
+- 先给论坛还不认识的退群的人建账号，用导出里的名字（设计第 8.10 节）。
+- `journal.jsonl` 按顺序发到论坛：离线时的帖子和楼层 ID（从 10^12 起）换成论坛上的；幂等键、来源和群里发出的时间照原样带。
 - 每导一条记一行 `forum/imported.jsonl`，中途停了再跑接着导，导过的不会再发。
 - 论坛不收的跳过，跟着它的一起跳过（比如帖子没发成，里面的回复），最后按原因列出来：成员关了群聊收录（`proxy_disabled`）、退群的人改标题（`member_frozen`）、帖子删了等。回复的那一层没了的，不带引用照发；帖子被合并了的，发到合并后留下的帖子里。
 - 导入以后用 `tools/duplicates.py` 找重复的帖子合并（设计第 8.10 节）。
 
 ### 接着跑
 
-发回来的目录就是现在的进度。剩下的在同一个目录里接着离线跑（换成自己的配置），跑完再导入，已经导入的不会再发。不能拿它连论坛在线跑：里面是编号，不是 QQ 号。
+发回来的目录就是现在的进度。剩下的在同一个目录里接着离线跑（换成自己的配置），跑完再导入，已经导入的不会再发。不能拿它连论坛在线跑：它跟进的帖子有离线发的，论坛上没有。
 
 ### 和在线收录的不同
 

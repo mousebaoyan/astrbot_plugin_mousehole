@@ -1,12 +1,11 @@
 """Hands the history archiving to someone with an LLM of their own, and takes back what they made
-(docs/history.md). `pack` writes all they need: the exports with every QQ number a pseudonym and
-no names, how far the archiving got, and a snapshot of the forum to archive onto offline.
-`import` makes on the forum what they wrote to the snapshot.
+(docs/history.md). `pack` writes all they need: the exports, how far the archiving got, and a
+snapshot of the forum to archive onto offline. `import` makes on the forum what they wrote to the
+snapshot.
 
 uv run python -m tools.handoff pack EXPORT... --config data/history-prod.json --data history \
-    --people data/people.json --out handoff
-uv run python -m tools.handoff import EXPORT... --config data/history-prod.json --data handoff \
-    --people data/people.json
+    --out handoff
+uv run python -m tools.handoff import EXPORT... --config data/history-prod.json --data handoff
 """
 
 import argparse
@@ -17,12 +16,11 @@ import re
 import shutil
 import sys
 from collections import Counter
-from collections.abc import Callable
 from functools import partial
 from pathlib import Path
 
-from mousehole.archive import load, write
-from mousehole.files import append_line, write_file
+from mousehole.archive import load
+from mousehole.files import append_line
 from mousehole.forum import Forum, ForumError
 from tools.fake_forum import OFFLINE_IDS
 from tools.history import Patient, enroll, kind_of, organized, patiently, read_exports
@@ -34,84 +32,21 @@ PAGE = 20
 # ---- Packing
 
 
-def hidden(export: dict, pseudonym: Callable[[int], int]) -> dict:
-    """The export with only what tools.history reads, every QQ number a pseudonym: what was said,
-    not who said it."""
-
-    def qq(uin: str) -> str:
-        # Below zero is a writer not known for sure, and @全体成员 is no one.
-        return str(pseudonym(int(uin))) if uin.isdigit() and int(uin) > 0 else uin
-
-    messages = []
-    for m in export["messages"]:
-        if m["system"] or m["recalled"]:
-            continue
-        elements = []
-        for e in m["content"]["elements"]:
-            kind, data = e["type"], e.get("data") or {}
-            if kind == "text":
-                data = {"text": data["text"]}
-            elif kind == "at":
-                data = {"uin": qq(data.get("uin") or "all")}
-            elif kind == "reply":
-                data = {"referencedMessageId": data.get("referencedMessageId")}
-            elif kind == "image":
-                data = {"subType": data.get("subType"), "md5": data.get("md5")}
-            else:
-                data = {}
-            elements.append({"type": kind, "data": data})
-        messages.append(
-            {
-                "id": m["id"],
-                "seq": m["seq"],
-                "timestamp": m["timestamp"],
-                "sender": {"uin": qq(m["sender"]["uin"]), "name": ""},
-                "content": {"elements": elements, "text": ""},
-                "system": False,
-                "recalled": False,
-            }
-        )
-    info = export["chatInfo"]
-    chat = {"type": "group", "peerUid": info["peerUid"], "selfUin": qq(info["selfUin"])}
-    return {"chatInfo": chat, "messages": messages}
-
-
 async def pack(args: argparse.Namespace) -> None:
     config = json.loads(Path(args.config).read_text(encoding="utf-8-sig"))
-    data, out, people_file = Path(args.data), Path(args.out), Path(args.people)
+    data, out = Path(args.data), Path(args.out)
     if (data / "forum").exists():
         raise SystemExit(f"{data} is archived offline already: hand it on as it is")
-    out.mkdir()
-    # QQ number → pseudonym, kept here to import with, the same for every hand-off.
-    people: dict[int, int] = {}
-    if people_file.exists():
-        people = {int(qq): p for qq, p in json.loads(people_file.read_text()).items()}
-
-    def pseudonym(qq: int) -> int:
-        return people.setdefault(qq, len(people) + 1)
-
     exports = [Path(x) for x in args.exports]
-    (out / "export").mkdir()
+    (out / "export").mkdir(parents=True)
     for path in exports:
-        export = json.loads(path.read_text(encoding="utf-8"))
-        text = json.dumps(hidden(export, pseudonym), ensure_ascii=False)
-        (out / "export" / path.name).write_text(text, encoding="utf-8")
+        shutil.copy(path, out / "export" / path.name)
     for name in ("runs.json", "done.txt"):
         shutil.copy(data / name, out / name)
     for run in sorted(data.glob("run-*")):
-        (out / run.name / "batch").mkdir(parents=True)
+        shutil.copytree(run / "batch", out / run.name / "batch")
         (out / run.name / "pending").mkdir()
         shutil.copy(run / "archive.json", out / run.name / "archive.json")
-        for batch in (run / "batch").glob("*.jsonl"):
-            records = []
-            for m in load(batch):
-                m.user = pseudonym(m.user) if m.user > 0 else m.user
-                for s in m.segments:
-                    if s["type"] == "at" and str(s["data"]["qq"]).isdigit():
-                        s["data"]["qq"] = str(pseudonym(int(s["data"]["qq"])))
-                records.append(m.record())
-            write(out / run.name / "batch" / batch.name, records)
-    write_file(people_file, json.dumps(people))
 
     forum = Forum(config["forum_url"], config["token"], Patient())
     wanted = quoted(exports, data)
@@ -121,7 +56,7 @@ async def pack(args: argparse.Namespace) -> None:
     (out / "forum" / "snapshot.json").write_text(text, encoding="utf-8")
     await forum.close()
     print(
-        f"{out}: {len(people)} people, {len(snapshot['threads'])} threads, "
+        f"{out}: {len(snapshot['threads'])} threads, "
         f"{len(snapshot['links'])} messages quoted from the forum",
         file=sys.stderr,
     )
@@ -215,22 +150,18 @@ class Skipped(Exception):
 
 async def import_(args: argparse.Namespace) -> None:
     config = json.loads(Path(args.config).read_text(encoding="utf-8-sig"))
-    # Pseudonym → QQ number; without people, the exports had QQ numbers.
-    people = {}
-    if args.people:
-        people = {p: int(qq) for qq, p in json.loads(Path(args.people).read_text()).items()}
     forum = Forum(config["forum_url"], config["token"], Patient())
     # Who left before the forum knew them gets an account first, by the names exported.
     senders = read_exports([Path(x) for x in args.exports]).senders
     await patiently(lambda: enroll(forum, senders))
-    skipped = await import_journal(forum, Path(args.data), people)
+    skipped = await import_journal(forum, Path(args.data))
     await forum.close()
     print(f"all imported, {sum(skipped.values()):,} skipped:", file=sys.stderr)
     for why, count in skipped.most_common():
         print(f"  {why}: {count:,}", file=sys.stderr)
 
 
-async def import_journal(forum: Forum, data: Path, people: dict[int, int]) -> Counter[str]:
+async def import_journal(forum: Forum, data: Path) -> Counter[str]:
     """The writes of the journal not imported yet made on the forum, in order; why those
     skipped were, all told."""
     journal = (data / "forum" / "journal.jsonl").read_text(encoding="utf-8").splitlines()
@@ -251,7 +182,7 @@ async def import_journal(forum: Forum, data: Path, people: dict[int, int]) -> Co
         entry = json.loads(line)
         record: dict = {"line": n}
         try:
-            made = await patiently(partial(make, forum, entry, ids, people))
+            made = await patiently(partial(make, forum, entry, ids))
             record["ids"] = made
             ids.update(made)
         except Skipped as e:
@@ -263,9 +194,7 @@ async def import_journal(forum: Forum, data: Path, people: dict[int, int]) -> Co
     return skipped
 
 
-async def make(
-    forum: Forum, entry: dict, ids: dict[int, int], people: dict[int, int]
-) -> dict[int, int]:
+async def make(forum: Forum, entry: dict, ids: dict[int, int]) -> dict[int, int]:
     """One write of the journal made on the forum; the IDs it made offline, and those they are
     here."""
 
@@ -283,14 +212,11 @@ async def make(
         # Replying to a floor skipped, a reply goes without the link, as the plugin's do.
         if target < OFFLINE_IDS or target in ids:
             body["reply_to_id"] = real(target)
-    act_as = entry["act_as"]
-    if act_as is not None and people:
-        act_as = people[act_as]
     creates = entry["made"]
     while True:
         try:
             res = await forum.call(
-                entry["method"], path, body=body, act_as=act_as, key=entry["key"]
+                entry["method"], path, body=body, act_as=entry["act_as"], key=entry["key"]
             )
             break
         except ForumError as e:
@@ -335,17 +261,14 @@ def main() -> None:
         description="把历史收录交给别人离线跑，再把结果导入论坛（docs/history.md）"
     )
     commands = parser.add_subparsers(dest="command", required=True)
-    pack_ = commands.add_parser("pack", help="打包：脱敏的导出、收录到哪了、论坛的快照")
+    pack_ = commands.add_parser("pack", help="打包：导出、收录到哪了、论坛的快照")
     import__ = commands.add_parser("import", help="把离线收录发出的内容发到论坛")
-    pack_.add_argument("exports", nargs="+", help="QQChatExporter 导出的 JSON")
-    import__.add_argument("exports", nargs="+", help="原来的导出，不是脱敏的：建账号时用名字")
     for command in (pack_, import__):
+        command.add_argument("exports", nargs="+", help="QQChatExporter 导出的 JSON")
         command.add_argument("--config", required=True, help="插件的配置，要论坛的地址和 token")
     pack_.add_argument("--data", required=True, help="在线收录的数据目录")
-    pack_.add_argument("--people", required=True, help="QQ 号和编号的对照表，没有就新建")
     pack_.add_argument("--out", required=True, help="打包到哪个目录，要还没有")
     import__.add_argument("--data", required=True, help="离线收录的数据目录")
-    import__.add_argument("--people", help="打包时的对照表；导出没脱敏时不给")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)
