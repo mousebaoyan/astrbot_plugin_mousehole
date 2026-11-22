@@ -77,8 +77,10 @@ class LLM:
         transport: httpx.AsyncBaseTransport | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         record: Callable[[dict[str, Any]], None] | None = None,
+        trust_env: bool = True,
     ):
-        """`record` is given the usage of every answer, as the API reports it."""
+        """`record` is given the usage of every answer, as the API reports it. `trust_env` False
+        keeps off the proxy the environment sets, for the reason the forum does (Forum)."""
         self.settings = settings
         headers = {"Authorization": f"Bearer {settings.api_key}"} if settings.api_key else {}
         self.http = httpx.AsyncClient(
@@ -86,6 +88,7 @@ class LLM:
             headers=headers,
             transport=transport,
             timeout=settings.timeout_seconds,
+            trust_env=trust_env,
         )
         self.sleep = sleep
         self.record = record
@@ -215,9 +218,11 @@ async def read(res: httpx.Response) -> tuple[str, dict, str | None]:
 
 
 class Embedder:
-    def __init__(self, base_url: str, api_key: str, model: str):
+    def __init__(self, base_url: str, api_key: str, model: str, trust_env: bool = True):
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-        self.http = httpx.AsyncClient(base_url=base_url.rstrip("/"), headers=headers, timeout=120)
+        self.http = httpx.AsyncClient(
+            base_url=base_url.rstrip("/"), headers=headers, timeout=120, trust_env=trust_env
+        )
         self.model = model
 
     async def close(self) -> None:
@@ -241,10 +246,15 @@ class Reranker:
         api_key: str,
         model: str,
         transport: httpx.AsyncBaseTransport | None = None,
+        trust_env: bool = True,
     ):
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         self.http = httpx.AsyncClient(
-            base_url=base_url.rstrip("/"), headers=headers, transport=transport, timeout=60
+            base_url=base_url.rstrip("/"),
+            headers=headers,
+            transport=transport,
+            timeout=60,
+            trust_env=trust_env,
         )
         self.model = model
 

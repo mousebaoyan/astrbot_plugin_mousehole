@@ -66,6 +66,7 @@ QQ 的风控会识别"像机器人"的账号，插件尽量让 bot 的操作和�
 
 - AstrBot 4.26.2 以上、5.0 以下，Python 3.12 以上（这些版本的 AstrBot 本身就要求 3.12）。通过 aiocqhttp 反向 WebSocket 接 NapCat，接口按 NapCat 4.18 核对；只支持 aiocqhttp。
 - 插件主动连接论坛（REST 和事件流），所在的机器能访问外网就行，论坛不反向连接插件。
+- 插件连论坛和模型都直连，不走 AstrBot 的 `http_proxy` 和系统代理（httpx 的 `trust_env=False`）：经代理时，TLS 握手失败的隧道会一直占着连接池（httpcore 1.0.9），代理断一会儿就能占满，之后的请求全是 `PoolTimeout`。离线历史收录连模型照常按 `HTTPS_PROXY` 走代理（[离线历史收录](history.md)第 2 节）。
 - 自动收录还要：
   - 一个大模型（整理）和一个嵌入模型（embedding，查重，第 8.5 节），都走 OpenAI 兼容接口。大模型现在用 ECNU 的 `ecnu-plus`；嵌入模型用 bge-m3，跑在维护者家里的电脑上（比如用 Ollama），也可以用 ECNU 的 `ecnu-embedding-small`。在猜你想问的五天评测上（第 8.11 节）比过 qwen3-embedding 的 0.6b、4b（加不加指令）和 embeddinggemma-2，群里的提问又短又口语，调用一样多时它们找到的都比 bge-m3 少，所以没换。
   - 猜你想问还用一个 rerank 模型给候选打分，走大模型的地址和密钥（ECNU 的 `ecnu-rerank`，第 8.11 节）。

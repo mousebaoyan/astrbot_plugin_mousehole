@@ -1,3 +1,5 @@
+import asyncio
+
 import httpx
 import pytest
 
@@ -46,3 +48,25 @@ async def test_the_forum_down_for_long_fails_in_the_end(waits):
     with pytest.raises(forum_module.ForumError):
         await f.call("GET", "/boards")
     assert len(sent) == 3
+
+
+async def test_the_forum_is_called_directly_whatever_proxy_astrbot_sets(monkeypatch, waits):
+    async def answer(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await reader.readuntil(b"\r\n\r\n")
+        writer.write(b'HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n{"ok":true}')
+        await writer.drain()
+        writer.close()
+
+    async def hang_up(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        writer.close()
+
+    site = await asyncio.start_server(answer, "127.0.0.1", 0)
+    proxy = await asyncio.start_server(hang_up, "127.0.0.1", 0)
+    monkeypatch.setenv("http_proxy", f"http://127.0.0.1:{proxy.sockets[0].getsockname()[1]}")
+    # One letting 127.0.0.1 past the proxy would pass this however Forum is made.
+    monkeypatch.setenv("no_proxy", "")
+    f = Forum(f"http://127.0.0.1:{site.sockets[0].getsockname()[1]}", "t")
+    assert await f.call("GET", "/boards") == {"ok": True}
+    await f.close()
+    site.close()
+    proxy.close()

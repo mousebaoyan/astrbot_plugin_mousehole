@@ -64,8 +64,9 @@ class Mousehole(Star):
             # The rest of the plugin works on; only archiving waits for its settings.
             logger.error("鼠洞插件：自动收录要填好大模型和嵌入模型的地址和模型，现在不收录")
         elif c["archive"]["enabled"]:
-            self.llm = LLM(Settings.of(m))
-            self.embedder = Embedder(e["base_url"], e["api_key"], e["model"])
+            # Off AstrBot's proxy, as the forum is (Forum).
+            self.llm = LLM(Settings.of(m), trust_env=False)
+            self.embedder = Embedder(e["base_url"], e["api_key"], e["model"], trust_env=False)
             index = Index(
                 self.forum,
                 self.embedder.embed,
@@ -86,7 +87,9 @@ class Mousehole(Star):
                 tuning=Tuning.of(c),
             )
             if c["archive"]["suggest"]:
-                self.reranker = Reranker(m["base_url"], m["api_key"], m["rerank_model"])
+                self.reranker = Reranker(
+                    m["base_url"], m["api_key"], m["rerank_model"], trust_env=False
+                )
                 self.suggest = Suggest(
                     self.forum,
                     # Without thinking: on the replays as good, in a fifth of the time.
@@ -102,7 +105,7 @@ class Mousehole(Star):
         if s["enabled"] and not (s["base_url"] and s["model"]):
             logger.error("鼠洞插件：AI 总结要在它的配置里填好大模型的地址和模型，现在不写总结")
         elif s["enabled"]:
-            self.summary_llm = LLM(Settings.of(s))
+            self.summary_llm = LLM(Settings.of(s), trust_env=False)
             self.summaries = Summaries(self.forum, self.summary_llm.complete)
         lottery = c["lottery"]
         self.events = Events(

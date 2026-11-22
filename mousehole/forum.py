@@ -26,11 +26,15 @@ class ForumError(Exception):
 
 class Forum:
     def __init__(self, url: str, token: str, transport: httpx.AsyncBaseTransport | None = None):
+        # Never through the proxy AstrBot or Windows sets: httpcore 1.0.9 keeps a proxy tunnel
+        # whose TLS handshake failed as busy for good, so a short outage of the proxy fills the
+        # pool and every call after it ends in PoolTimeout.
         self.http = httpx.AsyncClient(
             base_url=url.rstrip("/") + "/api/v1",
             headers={"Authorization": f"Bearer {token}"},
             transport=transport,
             timeout=30,
+            trust_env=False,
         )
 
     async def close(self) -> None:
